@@ -84,7 +84,8 @@ popier -c other.toml # use another config file
 
 ## API usage
 
-Each refresh makes one request per repository plus one per expanded workflow.
+Each refresh makes two requests per repository (recent runs and workflow names)
+plus one per expanded workflow.
 Responses are cached with their ETag, so unchanged data comes back as
 `304 Not Modified`, which does not count against the 5,000 requests/hour limit.
 The footer shows the remaining quota.

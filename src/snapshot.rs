@@ -1,6 +1,6 @@
 //! Point-in-time view of every watched repository: repo → workflow → job → step.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use futures::future::join_all;
 
@@ -87,13 +87,19 @@ async fn load_repo(
     repo: &RepoConfig,
     expand: &ExpandRequest,
 ) -> RepoView {
-    let runs = client
-        .list_runs(
+    let (runs, definitions) = futures::join!(
+        client.list_runs(
             &repo.slug,
             repo.branch.as_deref(),
             config.settings.runs_per_repo,
-        )
-        .await;
+        ),
+        client.list_workflows(&repo.slug),
+    );
+    // Stable workflow names by id. If this call fails, fall back to run titles.
+    let names: HashMap<u64, String> = definitions
+        .map(|defs| defs.into_iter().map(|d| (d.id, d.name)).collect())
+        .unwrap_or_default();
+    let names = &names;
 
     let workflows = match runs {
         Err(err) => Err(format!("{err:#}")),
@@ -114,17 +120,16 @@ async fn load_repo(
                 };
                 WorkflowView {
                     run_id: run.id,
-                    name: run
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("workflow {}", run.workflow_id)),
+                    name: workflow_label(&run, names),
                     branch: run.head_branch.clone(),
                     status,
                     url: run.html_url.clone(),
                     jobs,
                 }
             });
-            Ok(join_all(views).await)
+            let mut views = join_all(views).await;
+            views.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(views)
         }
     };
 
@@ -135,7 +140,16 @@ async fn load_repo(
     }
 }
 
-/// Keeps the newest run of each workflow, ordered by workflow name.
+/// Stable label for a run: the workflow's own name, not the run title.
+fn workflow_label(run: &RunDto, names: &HashMap<u64, String>) -> String {
+    names
+        .get(&run.workflow_id)
+        .cloned()
+        .or_else(|| run.name.clone())
+        .unwrap_or_else(|| format!("workflow {}", run.workflow_id))
+}
+
+/// Keeps the newest run of each workflow.
 pub fn latest_per_workflow(runs: Vec<RunDto>) -> Vec<RunDto> {
     let mut latest: Vec<RunDto> = Vec::new();
     for run in runs {
@@ -145,7 +159,6 @@ pub fn latest_per_workflow(runs: Vec<RunDto>) -> Vec<RunDto> {
             None => latest.push(run),
         }
     }
-    latest.sort_by(|a, b| a.name.cmp(&b.name));
     latest
 }
 
@@ -200,6 +213,17 @@ mod tests {
         let latest = latest_per_workflow(runs);
         let ids: Vec<u64> = latest.iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![7, 9]);
+    }
+
+    #[test]
+    fn labels_use_workflow_name() {
+        let mut names = HashMap::new();
+        names.insert(1, "Release".to_string());
+        assert_eq!(
+            workflow_label(&run(5, 1, "release v2.4.2 ← tag"), &names),
+            "Release"
+        );
+        assert_eq!(workflow_label(&run(6, 2, "CI"), &names), "CI");
     }
 
     #[test]

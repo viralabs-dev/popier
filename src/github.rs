@@ -34,6 +34,18 @@ pub struct RunDto {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowsPage {
+    pub workflows: Vec<WorkflowDto>,
+}
+
+/// A workflow definition. Its `name` is stable, unlike a run's title.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowDto {
+    pub id: u64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct JobsPage {
     pub jobs: Vec<JobDto>,
 }
@@ -100,6 +112,12 @@ impl Client {
             url.push_str(&urlencode(branch));
         }
         Ok(self.get_json::<RunsPage>(&url).await?.workflow_runs)
+    }
+
+    /// Workflow definitions of a repository (id and stable name).
+    pub async fn list_workflows(&self, slug: &str) -> Result<Vec<WorkflowDto>> {
+        let url = format!("{API}/repos/{slug}/actions/workflows?per_page=100");
+        Ok(self.get_json::<WorkflowsPage>(&url).await?.workflows)
     }
 
     /// Jobs (with steps) of the latest attempt of a run.
@@ -225,6 +243,13 @@ mod tests {
             "html_url":"https://github.com/o/r/actions/runs/7","extra":true}]}"#;
         let page: RunsPage = serde_json::from_str(json).unwrap();
         assert_eq!(page.workflow_runs[0].workflow_id, 3);
+    }
+
+    #[test]
+    fn parses_workflows_payload() {
+        let json = r#"{"total_count":1,"workflows":[{"id":3,"name":"CI","path":".github/workflows/ci.yml","state":"active"}]}"#;
+        let page: WorkflowsPage = serde_json::from_str(json).unwrap();
+        assert_eq!(page.workflows[0].name, "CI");
     }
 
     #[test]
