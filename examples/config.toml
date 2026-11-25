@@ -1,0 +1,48 @@
+# popier configuration
+# Location: ~/.config/popier/config.toml (or pass --config <path>)
+
+[settings]
+# Seconds between refreshes. Unchanged data is served via ETag and does not
+# count against the GitHub rate limit, but keep this >= 30 anyway.
+refresh_secs = 60
+# "attention": expand only workflows that are running, queued or failed.
+# "all": expand every workflow.
+expand = "attention"
+# Recent runs scanned per repo to find the latest run of each workflow.
+runs_per_repo = 30
+
+# One [[repo]] block per repository, in display order.
+# Optional keys: label = "short name", branch = "main"
+
+[[repo]]
+slug = "viralabs-dev/brabo"
+
+[[repo]]
+slug = "viralabs-dev/brabo-api"
+
+[[repo]]
+slug = "viralabs-dev/brabo-engine"
+
+[[repo]]
+slug = "viralabs-dev/brabo-web"
+
+[[repo]]
+slug = "viralabs-dev/brabo-broker"
+
+[[repo]]
+slug = "viralabs-dev/brabo-contracts"
+
+[[repo]]
+slug = "viralabs-dev/brabo-runner"
+
+[[repo]]
+slug = "viralabs-dev/brabo-qa"
+
+[[repo]]
+slug = "viralabs-dev/brabo-ci"
+
+[[repo]]
+slug = "viralabs-dev/brabo-infra"
+
+[[repo]]
+slug = "viralabs-dev/brabo-workspace"
