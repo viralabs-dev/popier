@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use futures::future::join_all;
 
 use crate::config::{Config, ExpandMode, RepoConfig};
+use crate::filter::RunFilter;
 use crate::github::{Client, JobDto, RunDto};
 use crate::status::Status;
 
@@ -55,6 +56,8 @@ pub struct ExpandRequest {
     pub all: bool,
     /// Run ids the user explicitly expanded in the TUI.
     pub pinned: HashSet<u64>,
+    /// Only consider runs matching this filter (typed with `/` in the TUI).
+    pub filter: Option<RunFilter>,
 }
 
 impl ExpandRequest {
@@ -62,6 +65,7 @@ impl ExpandRequest {
         Self {
             all: mode == ExpandMode::All,
             pinned: HashSet::new(),
+            filter: None,
         }
     }
 
@@ -105,6 +109,10 @@ async fn load_repo(
     let workflows = match runs {
         Err(err) => Err(format!("{err:#}")),
         Ok(runs) => {
+            let runs = match &expand.filter {
+                Some(filter) => runs.into_iter().filter(|r| filter.matches(r)).collect(),
+                None => runs,
+            };
             let latest = latest_per_workflow(runs);
             let views = latest.into_iter().map(|run| async move {
                 let status = run_status(&run);
@@ -201,6 +209,7 @@ mod tests {
             status: Some("completed".into()),
             conclusion: Some("success".into()),
             html_url: String::new(),
+            pull_requests: Vec::new(),
         }
     }
 

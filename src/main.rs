@@ -2,6 +2,7 @@
 //! with every workflow, job and step laid out as a tree.
 
 mod config;
+mod filter;
 mod github;
 mod notify;
 mod snapshot;

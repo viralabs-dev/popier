@@ -16,6 +16,7 @@ use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
+use crate::filter::RunFilter;
 use crate::github::Client;
 use crate::notify;
 use crate::snapshot::{self, ExpandRequest, Snapshot};
@@ -32,6 +33,10 @@ struct App {
     last_refresh: Option<Instant>,
     /// Present when desktop notifications are enabled.
     watcher: Option<notify::Watcher>,
+    /// Text being typed after `/`; `Some` while the filter field has focus.
+    filter_input: Option<String>,
+    /// Text of the applied filter, shown in the footer.
+    filter_text: String,
 }
 
 impl App {
@@ -169,6 +174,8 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
             .settings
             .notify
             .then(|| notify::Watcher::new(config.settings.notify_branches.clone())),
+        filter_input: None,
+        filter_text: String::new(),
     };
 
     let mut terminal = ratatui::init();
@@ -198,9 +205,26 @@ fn ui_loop(
         let _ = refresh_tx.send(());
     };
 
+    // Applies `text` as the run filter. Notifications pause while a filter is
+    // on (the filtered view is not the real "latest run" of each workflow) and
+    // resume silently when it is cleared.
+    let apply_filter = |app: &mut App, text: &str| {
+        let filter = RunFilter::parse(text);
+        if filter == app.expand.filter {
+            return;
+        }
+        app.filter_text = text.trim().to_owned();
+        app.expand.filter = filter;
+        if let Some(watcher) = app.watcher.as_mut() {
+            watcher.reset();
+        }
+        request_refresh(app);
+    };
+
     loop {
         while let Ok(snap) = snap_rx.try_recv() {
-            if let Some(watcher) = app.watcher.as_mut() {
+            let filtering = app.expand.filter.is_some();
+            if let Some(watcher) = app.watcher.as_mut().filter(|_| !filtering) {
                 for event in watcher.observe(&snap) {
                     notify::send(&event);
                     if event.change == notify::Change::Failed {
@@ -226,7 +250,36 @@ fn ui_loop(
             continue;
         }
         app.message = None;
+
+        // Filter field has focus: keys edit the text, the filter applies live.
+        if let Some(input) = app.filter_input.as_mut() {
+            match key.code {
+                KeyCode::Enter => app.filter_input = None,
+                KeyCode::Esc => {
+                    app.filter_input = None;
+                    apply_filter(app, "");
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                    let text = input.clone();
+                    apply_filter(app, &text);
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(());
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    let text = input.clone();
+                    apply_filter(app, &text);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
+            KeyCode::Char('/') => app.filter_input = Some(app.filter_text.clone()),
+            KeyCode::Esc if app.expand.filter.is_some() => apply_filter(app, ""),
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1),
@@ -288,10 +341,30 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         );
     frame.render_stateful_widget(list, main, &mut app.list);
 
+    if let Some(input) = &app.filter_input {
+        let line = Line::from(vec![
+            Span::styled(" filter: ", Style::default().fg(Color::Cyan)),
+            Span::raw(input.clone()),
+            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "   branch part or #PR · ⏎ keep · Esc clear",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), footer);
+        return;
+    }
+
     let mut spans = vec![Span::styled(
-        " ↑↓/jk move  ⏎ fold  Tab next repo  a all  r refresh  o open  q quit ",
+        " ↑↓/jk move  ⏎ fold  Tab next repo  / filter  a all  r refresh  o open  q quit ",
         Style::default().fg(Color::DarkGray),
     )];
+    if !app.filter_text.is_empty() {
+        spans.push(Span::styled(
+            format!(" filter: {} (Esc clears) ", app.filter_text),
+            Style::default().fg(Color::Black).bg(Color::Cyan),
+        ));
+    }
     if let Some(at) = app.last_refresh {
         spans.push(Span::raw(format!(
             " updated {}s ago",
