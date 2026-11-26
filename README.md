@@ -79,6 +79,11 @@ installs it into `~/.local/bin` (set `POPIER_INSTALL_DIR` for another folder,
 `POPIER_VERSION=v0.1.0` for a given release). The script is
 [`docs/install.sh`](docs/install.sh), if you'd rather read it first.
 
+**Update:** `popier --update` replaces the binary with the latest release the
+same way, checking its SHA-256 first; if the download or the checksum fails,
+nothing is changed. A popier built from source updates with
+`cargo install --git https://github.com/viralabs-dev/popier --force`.
+
 **Prebuilt binary by hand:** download `popier-x86_64-unknown-linux-musl.tar.gz`
 (static, any distro) or `popier-x86_64-unknown-linux-gnu.tar.gz` from the
 [latest release](https://github.com/viralabs-dev/popier/releases/latest):
