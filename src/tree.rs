@@ -2,11 +2,13 @@
 
 use std::collections::HashSet;
 
-use crate::snapshot::{JobView, Snapshot, WorkflowView};
+use crate::snapshot::{JobView, RepoView, Snapshot, WorkflowView};
 use crate::status::Status;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RowKey {
+    /// A `[[group]]` of repositories, by name.
+    Group(String),
     Repo(String),
     Workflow(u64),
     Job(u64, usize),
@@ -73,6 +75,7 @@ impl Gauge {
 /// What the user folded by hand.
 #[derive(Debug, Clone, Default)]
 pub struct Folds {
+    pub collapsed_groups: HashSet<String>,
     pub collapsed_repos: HashSet<String>,
     pub collapsed_workflows: HashSet<u64>,
 }
@@ -87,126 +90,243 @@ pub fn build(snapshot: &Snapshot, folds: &Folds) -> Vec<Row> {
 /// Like [`build`], with `now` in Unix seconds for elapsed times.
 pub fn build_at(snapshot: &Snapshot, folds: &Folds, now: i64) -> Vec<Row> {
     let mut rows = Vec::new();
-    for repo in &snapshot.repos {
-        let repo_open = !folds.collapsed_repos.contains(&repo.slug);
-        let repo_url = format!("https://github.com/{}/actions", repo.slug);
-        let summary = repo
-            .workflows
-            .as_ref()
-            .ok()
-            .and_then(|w| repo_summary(w, now));
-        let (lead, branch, gauge) = match summary {
-            Some((lead, branch, gauge)) => (Some(lead), branch, Some(gauge)),
-            None => (None, None, None),
+    let repos = &snapshot.repos;
+    let mut i = 0;
+    while i < repos.len() {
+        let Some(group) = repos[i].group.as_deref() else {
+            push_repo(&mut rows, &repos[i], folds, now);
+            i += 1;
+            continue;
         };
+        let end = i + repos[i..]
+            .iter()
+            .take_while(|r| r.group.as_deref() == Some(group))
+            .count();
+        let members = &repos[i..end];
+        let open = !folds.collapsed_groups.contains(group);
+        rows.push(group_row(group, members, open, now));
+        if open {
+            let start = rows.len();
+            for repo in members {
+                push_repo(&mut rows, repo, folds, now);
+            }
+            rows[start..].iter_mut().for_each(|r| r.depth += 1);
+        }
+        i = end;
+    }
+    rows
+}
+
+/// Only the repo rows, every repo included even inside a folded group
+/// (for the header's totals).
+pub fn repo_rows(snapshot: &Snapshot) -> Vec<Row> {
+    let folds = Folds {
+        collapsed_repos: snapshot.repos.iter().map(|r| r.slug.clone()).collect(),
+        ..Folds::default()
+    };
+    build(snapshot, &folds)
+        .into_iter()
+        .filter(|r| matches!(r.key, RowKey::Repo(_)))
+        .collect()
+}
+
+/// Lead pipeline name, its branch, and the gauge a summary row shows.
+type Summary = (String, Option<String>, Gauge);
+
+/// A group row: the worst state among its repos, with the repo and pipeline
+/// that cause it, or how many repos it holds when all is calm.
+fn group_row(name: &str, members: &[RepoView], open: bool, now: i64) -> Row {
+    let summaries: Vec<(&RepoView, Summary)> = members
+        .iter()
+        .filter_map(|m| {
+            let s = m
+                .workflows
+                .as_ref()
+                .ok()
+                .and_then(|w| repo_summary(w, now))?;
+            Some((m, s))
+        })
+        .collect();
+    let worst = summaries
+        .iter()
+        .min_by_key(|(_, (_, _, g))| attention_rank(g.status));
+    let count = format!(
+        "{} repo{}",
+        members.len(),
+        if members.len() == 1 { "" } else { "s" }
+    );
+    let (lead, branch, gauge) = match worst {
+        Some((repo, (lead, branch, gauge))) if attention_rank(gauge.status) < 3 => (
+            format!("{} · {lead}", repo.name),
+            branch.clone(),
+            Some(gauge.clone()),
+        ),
+        Some((_, (_, _, gauge))) => {
+            // All calm: when the most recent pipeline of the group ended.
+            let ago = summaries
+                .iter()
+                .filter_map(|(_, (_, _, g))| match g.elapsed {
+                    Some(Elapsed::Ago(s)) => Some(s),
+                    _ => None,
+                })
+                .min()
+                .map(Elapsed::Ago);
+            let calm = Gauge {
+                status: gauge.status,
+                done: 0,
+                total: 0,
+                elapsed: ago,
+                hint: None,
+            };
+            (count.clone(), None, Some(calm))
+        }
+        None => (count.clone(), None, None),
+    };
+    Row {
+        key: RowKey::Group(name.to_owned()),
+        depth: 0,
+        status: gauge.as_ref().map(|g| g.status),
+        text: name.to_owned(),
+        detail: None,
+        is_error: false,
+        url: None,
+        foldable: true,
+        expanded: open,
+        gauge,
+        branch,
+        lead: Some(lead),
+    }
+}
+
+/// Failed first, then running, then queued, then the rest.
+fn attention_rank(s: Status) -> u8 {
+    match s {
+        Status::Failure => 0,
+        Status::Running => 1,
+        Status::Queued => 2,
+        _ => 3,
+    }
+}
+
+/// The repo row and, when open, its workflows, jobs and steps.
+fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
+    let repo_open = !folds.collapsed_repos.contains(&repo.slug);
+    let repo_url = format!("https://github.com/{}/actions", repo.slug);
+    let summary = repo
+        .workflows
+        .as_ref()
+        .ok()
+        .and_then(|w| repo_summary(w, now));
+    let (lead, branch, gauge) = match summary {
+        Some((lead, branch, gauge)) => (Some(lead), branch, Some(gauge)),
+        None => (None, None, None),
+    };
+    rows.push(Row {
+        key: RowKey::Repo(repo.slug.clone()),
+        depth: 0,
+        status: gauge.as_ref().map(|g| g.status),
+        text: repo.name.clone(),
+        detail: None,
+        is_error: false,
+        url: Some(repo_url),
+        foldable: true,
+        expanded: repo_open,
+        gauge,
+        branch,
+        lead,
+    });
+    if !repo_open {
+        return;
+    }
+
+    let workflows = match &repo.workflows {
+        Err(err) => {
+            rows.push(note(
+                &repo.slug,
+                0,
+                format!("error: {}", first_line(err)),
+                true,
+            ));
+            return;
+        }
+        Ok(w) if w.is_empty() => {
+            rows.push(note(&repo.slug, 0, "(no runs)".into(), false));
+            return;
+        }
+        Ok(w) => w,
+    };
+
+    for wf in workflows {
+        let open = wf.jobs.is_some() && !folds.collapsed_workflows.contains(&wf.run_id);
         rows.push(Row {
-            key: RowKey::Repo(repo.slug.clone()),
-            depth: 0,
-            status: gauge.as_ref().map(|g| g.status),
-            text: repo.name.clone(),
-            detail: None,
+            key: RowKey::Workflow(wf.run_id),
+            depth: 1,
+            status: Some(wf.status),
+            text: wf.name.clone(),
+            detail: branch_detail(&wf.name, wf.branch.as_deref()),
             is_error: false,
-            url: Some(repo_url),
+            url: Some(wf.url.clone()),
             foldable: true,
-            expanded: repo_open,
-            gauge,
-            branch,
-            lead,
+            expanded: open,
+            gauge: Some(workflow_gauge(wf, now)),
+            branch: wf.branch.as_deref().map(|b| shorten_middle(b, MAX_BRANCH)),
+            lead: None,
         });
-        if !repo_open {
+        if !open {
             continue;
         }
-
-        let workflows = match &repo.workflows {
-            Err(err) => {
-                rows.push(note(
-                    &repo.slug,
-                    0,
-                    format!("error: {}", first_line(err)),
-                    true,
-                ));
-                continue;
-            }
-            Ok(w) if w.is_empty() => {
-                rows.push(note(&repo.slug, 0, "(no runs)".into(), false));
-                continue;
-            }
-            Ok(w) => w,
-        };
-
-        for wf in workflows {
-            let open = wf.jobs.is_some() && !folds.collapsed_workflows.contains(&wf.run_id);
-            rows.push(Row {
-                key: RowKey::Workflow(wf.run_id),
-                depth: 1,
-                status: Some(wf.status),
-                text: wf.name.clone(),
-                detail: branch_detail(&wf.name, wf.branch.as_deref()),
-                is_error: false,
-                url: Some(wf.url.clone()),
-                foldable: true,
-                expanded: open,
-                gauge: Some(workflow_gauge(wf, now)),
-                branch: wf.branch.as_deref().map(|b| shorten_middle(b, MAX_BRANCH)),
-                lead: None,
-            });
-            if !open {
-                continue;
-            }
-            match wf.jobs.as_ref().expect("open implies jobs") {
-                Err(err) => rows.push(Row {
-                    depth: 2,
-                    ..note(&repo.slug, 1, format!("error: {}", first_line(err)), true)
-                }),
-                Ok(jobs) => {
-                    for (j, job) in jobs.iter().enumerate() {
+        match wf.jobs.as_ref().expect("open implies jobs") {
+            Err(err) => rows.push(Row {
+                depth: 2,
+                ..note(&repo.slug, 1, format!("error: {}", first_line(err)), true)
+            }),
+            Ok(jobs) => {
+                for (j, job) in jobs.iter().enumerate() {
+                    rows.push(Row {
+                        key: RowKey::Job(wf.run_id, j),
+                        depth: 2,
+                        status: Some(job.status),
+                        text: job.name.clone(),
+                        detail: None,
+                        is_error: false,
+                        url: job.url.clone(),
+                        foldable: false,
+                        expanded: true,
+                        gauge: Some(job_gauge(job, now)),
+                        branch: None,
+                        lead: None,
+                    });
+                    for step in &job.steps {
                         rows.push(Row {
-                            key: RowKey::Job(wf.run_id, j),
-                            depth: 2,
-                            status: Some(job.status),
-                            text: job.name.clone(),
-                            detail: None,
+                            key: RowKey::Step(wf.run_id, j, step.number),
+                            depth: 3,
+                            status: Some(step.status),
+                            text: step.name.clone(),
+                            detail: Some(format!("{}.", step.number)),
                             is_error: false,
                             url: job.url.clone(),
                             foldable: false,
-                            expanded: true,
-                            gauge: Some(job_gauge(job, now)),
+                            expanded: false,
+                            gauge: Some(Gauge {
+                                status: step.status,
+                                done: 0,
+                                total: 0,
+                                elapsed: span(
+                                    step.started_at.as_deref(),
+                                    step.completed_at.as_deref(),
+                                    step.status,
+                                    now,
+                                ),
+                                hint: None,
+                            }),
                             branch: None,
                             lead: None,
                         });
-                        for step in &job.steps {
-                            rows.push(Row {
-                                key: RowKey::Step(wf.run_id, j, step.number),
-                                depth: 3,
-                                status: Some(step.status),
-                                text: step.name.clone(),
-                                detail: Some(format!("{}.", step.number)),
-                                is_error: false,
-                                url: job.url.clone(),
-                                foldable: false,
-                                expanded: false,
-                                gauge: Some(Gauge {
-                                    status: step.status,
-                                    done: 0,
-                                    total: 0,
-                                    elapsed: span(
-                                        step.started_at.as_deref(),
-                                        step.completed_at.as_deref(),
-                                        step.status,
-                                        now,
-                                    ),
-                                    hint: None,
-                                }),
-                                branch: None,
-                                lead: None,
-                            });
-                        }
                     }
                 }
             }
         }
     }
-    rows
 }
 
 fn note(slug: &str, idx: usize, text: String, is_error: bool) -> Row {
@@ -304,13 +424,8 @@ fn workflow_gauge(wf: &WorkflowView, now: i64) -> Gauge {
 
 /// The pipeline a repo row stands for: failed, else running, else queued,
 /// else the most recently updated one.
-fn repo_summary(workflows: &[WorkflowView], now: i64) -> Option<(String, Option<String>, Gauge)> {
-    let rank = |s: Status| match s {
-        Status::Failure => 0,
-        Status::Running => 1,
-        Status::Queued => 2,
-        _ => 3,
-    };
+fn repo_summary(workflows: &[WorkflowView], now: i64) -> Option<Summary> {
+    let rank = attention_rank;
     let lead = workflows.iter().min_by(|a, b| {
         rank(a.status)
             .cmp(&rank(b.status))
@@ -441,8 +556,9 @@ pub fn render_plain(rows: &[Row], color: bool) -> String {
             out.push_str(&paint("90", d));
             out.push(' ');
         }
-        match (row.depth, row.is_error) {
-            (0, _) => out.push_str(&paint("1", &row.text)),
+        let heading = matches!(row.key, RowKey::Group(_) | RowKey::Repo(_));
+        match (heading, row.is_error) {
+            (true, _) => out.push_str(&paint("1", &row.text)),
             (_, true) => out.push_str(&paint("31", &row.text)),
             _ => out.push_str(&row.text),
         }
@@ -466,6 +582,7 @@ mod tests {
                 RepoView {
                     name: "api".into(),
                     slug: "o/api".into(),
+                    group: None,
                     workflows: Ok(vec![
                         WorkflowView {
                             workflow_id: 10,
@@ -506,6 +623,7 @@ mod tests {
                 RepoView {
                     name: "web".into(),
                     slug: "o/web".into(),
+                    group: None,
                     workflows: Err("GitHub API 404: Not Found".into()),
                 },
             ],
@@ -519,6 +637,27 @@ mod tests {
         // api, CI, test, step, Lint, web, error
         assert_eq!(depths, vec![0, 1, 2, 3, 1, 0, 1]);
         assert!(rows[6].is_error);
+    }
+
+    #[test]
+    fn groups_nest_their_repos() {
+        let mut snap = sample();
+        for repo in &mut snap.repos {
+            repo.group = Some("proj".into());
+        }
+        let rows = build(&snap, &Folds::default());
+        assert_eq!(rows[0].key, RowKey::Group("proj".into()));
+        // Worst state of the group is the failing CI of api.
+        assert_eq!(rows[0].status, Some(Status::Failure));
+        assert_eq!(rows[0].lead.as_deref(), Some("api · CI"));
+        let depths: Vec<u8> = rows.iter().map(|r| r.depth).collect();
+        assert_eq!(depths, vec![0, 1, 2, 3, 4, 2, 1, 2]);
+
+        let mut folds = Folds::default();
+        folds.collapsed_groups.insert("proj".into());
+        assert_eq!(build(&snap, &folds).len(), 1);
+        // The header still sees every repo of a folded group.
+        assert_eq!(repo_rows(&snap).len(), 2);
     }
 
     #[test]
