@@ -316,25 +316,26 @@ impl App {
         self.list.select(Some(next as usize));
     }
 
+    /// Moves to the next (or previous) top-level row: a group or a repo
+    /// outside groups. Wraps around: past the last one comes the first.
     fn jump_repo(&mut self, forward: bool) {
-        let current = self.list.selected().unwrap_or(0);
-        let found = if forward {
-            self.rows
-                .iter()
-                .enumerate()
-                .skip(current + 1)
-                .find(|(_, r)| r.depth == 0)
-        } else {
-            self.rows
-                .iter()
-                .enumerate()
-                .take(current)
-                .rev()
-                .find(|(_, r)| r.depth == 0)
+        let tops: Vec<usize> = (0..self.rows.len())
+            .filter(|&i| self.rows[i].depth == 0)
+            .collect();
+        let (Some(&first), Some(&last)) = (tops.first(), tops.last()) else {
+            return;
         };
-        if let Some((i, _)) = found {
-            self.list.select(Some(i));
-        }
+        let current = self.list.selected().unwrap_or(0);
+        let target = if forward {
+            tops.iter().copied().find(|&i| i > current).unwrap_or(first)
+        } else {
+            tops.iter()
+                .rev()
+                .copied()
+                .find(|&i| i < current)
+                .unwrap_or(last)
+        };
+        self.list.select(Some(target));
     }
 
     /// Toggles the selected row. Returns true when new data must be fetched.
@@ -1344,6 +1345,25 @@ mod tests {
         app.rebuild();
         app.list.select(Some(3));
         app
+    }
+
+    #[test]
+    fn tab_wraps_around_top_level_rows() {
+        let mut app = demo_app("noite");
+        let tops: Vec<usize> = (0..app.rows.len())
+            .filter(|&i| app.rows[i].depth == 0)
+            .collect();
+        assert!(tops.len() >= 2);
+        let (first, last) = (tops[0], *tops.last().unwrap());
+        app.list.select(Some(last));
+        app.jump_repo(true);
+        assert_eq!(app.list.selected(), Some(first));
+        app.jump_repo(false);
+        assert_eq!(app.list.selected(), Some(last));
+        // From inside the last repo, Tab also goes back to the first.
+        app.list.select(Some(app.rows.len() - 1));
+        app.jump_repo(true);
+        assert_eq!(app.list.selected(), Some(first));
     }
 
     #[test]
