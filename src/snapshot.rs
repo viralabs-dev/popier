@@ -23,6 +23,7 @@ pub struct RepoView {
 
 #[derive(Debug, Clone)]
 pub struct WorkflowView {
+    pub workflow_id: u64,
     pub run_id: u64,
     pub name: String,
     pub branch: Option<String>,
@@ -119,6 +120,7 @@ async fn load_repo(
                     None
                 };
                 WorkflowView {
+                    workflow_id: run.workflow_id,
                     run_id: run.id,
                     name: workflow_label(&run, names),
                     branch: run.head_branch.clone(),

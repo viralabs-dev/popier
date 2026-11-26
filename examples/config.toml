@@ -10,6 +10,11 @@ refresh_secs = 60
 expand = "attention"
 # Recent runs scanned per repo to find the latest run of each workflow.
 runs_per_repo = 30
+# Desktop notification (notify-send) when a workflow starts failing, and a
+# quieter one when it passes again. Only in the interactive dashboard.
+notify = true
+# Restrict notifications to these branches. Empty list = every branch.
+notify_branches = []
 
 # One [[repo]] block per repository, in display order.
 # Optional keys: label = "short name", branch = "main"

@@ -3,6 +3,7 @@
 
 mod config;
 mod github;
+mod notify;
 mod snapshot;
 mod status;
 mod tree;

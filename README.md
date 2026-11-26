@@ -43,6 +43,8 @@ The config lists repositories in display order:
 refresh_secs = 60        # seconds between refreshes
 expand = "attention"     # "attention" (running/queued/failed) or "all"
 runs_per_repo = 30       # recent runs scanned per repo
+notify = true            # desktop notification when a workflow fails / recovers
+notify_branches = []     # only notify for these branches (empty = all)
 
 [[repo]]
 slug = "viralabs-dev/brabo"
@@ -81,6 +83,15 @@ popier -c other.toml # use another config file
 | `r` | refresh now |
 | `o` | open the selected item in the browser |
 | `q` / `Esc` | quit |
+
+## Notifications
+
+While the dashboard is open, popier sends a desktop notification
+(`notify-send`) when a workflow that was in any other state starts failing,
+and a low-urgency one when a failing workflow passes again. Nothing is sent
+for failures that were already there when popier started, and each run is
+announced at most once. Turn it off with `notify = false`, or limit it with
+`notify_branches = ["main", "dev"]`.
 
 ## API usage
 
