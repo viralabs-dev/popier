@@ -125,8 +125,13 @@ async fn discover_config(owners: &[String]) -> Result<String> {
     let client = github::Client::new(github::resolve_token()?)?;
     eprintln!("looking for your repositories on GitHub...");
     let report = discover::discover(&client, owners).await?;
+    let scope = if owners.is_empty() {
+        "visible to you".to_owned()
+    } else {
+        format!("in {}", owners.join(", "))
+    };
     eprintln!(
-        "{} repositories seen, {} archived or forks skipped, {} without active workflows",
+        "{} repositories {scope}, {} archived or forks skipped, {} without active workflows",
         report.seen, report.skipped_archived_or_fork, report.without_workflows
     );
     if report.found.is_empty() {
