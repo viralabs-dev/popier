@@ -2,6 +2,7 @@
 //! with every workflow, job and step laid out as a tree.
 
 mod config;
+mod discover;
 mod filter;
 mod github;
 mod logs;
@@ -46,11 +47,23 @@ enum Cmd {
         #[arg(long)]
         no_color: bool,
     },
-    /// Write a sample config file.
+    /// Write a config file: a sample, or your own repos with --discover.
     Init {
         /// Overwrite an existing file.
         #[arg(long)]
         force: bool,
+        /// Find your repositories through your GitHub login (`gh`), keep the
+        /// ones with active workflows (no archived repos or forks), and group
+        /// repos that share a name prefix, like brabo, brabo-api, brabo-web.
+        #[arg(long)]
+        discover: bool,
+        /// With --discover: only repositories of this user or organization.
+        /// Repeat for more than one.
+        #[arg(long, value_name = "OWNER", requires = "discover")]
+        owner: Vec<String>,
+        /// Print the config instead of writing it.
+        #[arg(long)]
+        print: bool,
     },
 }
 
@@ -63,7 +76,30 @@ async fn main() -> Result<()> {
     };
 
     match cli.command.unwrap_or(Cmd::Tui) {
-        Cmd::Init { force } => init(&path, force),
+        Cmd::Init {
+            force,
+            discover,
+            owner,
+            print,
+        } => {
+            if !print && path.exists() && !force {
+                bail!(
+                    "{} already exists (use --force to overwrite, or --print to see the result)",
+                    path.display()
+                );
+            }
+            let text = if discover {
+                discover_config(&owner).await?
+            } else {
+                config::SAMPLE.to_owned()
+            };
+            if print {
+                print!("{text}");
+                Ok(())
+            } else {
+                write_config(&path, &text)
+            }
+        }
         Cmd::Once { all, no_color } => {
             let config = Config::load(&path)?;
             let client = github::Client::new(github::resolve_token()?)?;
@@ -85,17 +121,43 @@ async fn main() -> Result<()> {
     }
 }
 
-fn init(path: &PathBuf, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        bail!(
-            "{} already exists (use --force to overwrite)",
-            path.display()
-        );
+async fn discover_config(owners: &[String]) -> Result<String> {
+    let client = github::Client::new(github::resolve_token()?)?;
+    eprintln!("looking for your repositories on GitHub...");
+    let report = discover::discover(&client, owners).await?;
+    eprintln!(
+        "{} repositories seen, {} archived or forks skipped, {} without active workflows",
+        report.seen, report.skipped_archived_or_fork, report.without_workflows
+    );
+    if report.found.is_empty() {
+        bail!("no repository with active workflows found");
     }
+    let (groups, _) = discover::suggest_groups(&report.found);
+    eprintln!(
+        "{} repositories to watch, {} groups{}",
+        report.found.len(),
+        groups.len(),
+        if groups.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({})",
+                groups
+                    .iter()
+                    .map(|(name, m)| format!("{name}: {}", m.len()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
+    Ok(discover::render(&report.found))
+}
+
+fn write_config(path: &PathBuf, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, config::SAMPLE)?;
+    std::fs::write(path, text)?;
     println!("wrote {}", path.display());
     Ok(())
 }

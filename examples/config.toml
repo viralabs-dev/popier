@@ -33,3 +33,11 @@ slug = "your-org/your-repo"
 slug = "your-org/another-repo"
 label = "another"
 branch = "main"
+
+# A project with several repositories can be a group: one row with the worst
+# state of its repos, folded and unfolded like a repo. Slugs listed only here
+# are watched with default options. `popier init --discover` writes groups
+# for repos that share a name prefix.
+# [[group]]
+# name = "your-project"
+# repos = ["your-org/your-repo", "your-org/your-repo-api"]

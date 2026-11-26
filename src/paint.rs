@@ -104,7 +104,8 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
     let mut left: Vec<Span<'static>> = Vec::new();
     let mut name_style = Style::new().fg(t.ink);
     match &row.key {
-        RowKey::Repo(_) => {
+        RowKey::Group(_) | RowKey::Repo(_) => {
+            left.push(Span::styled(prefix.to_owned(), look.fg(t.faint)));
             left.push(Span::styled(fold(row), look.fg(t.faint)));
             match row.status {
                 Some(s) => left.push(look.glyph(s, true)),
@@ -181,7 +182,7 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
             let gap = if bar_w > 0 { bar_w + 2 } else { 1 } + 5 + 8;
             left.push(Span::raw(" ".repeat(gap)));
             left.push(Span::styled(elapsed(gauge.elapsed), look.fg(t.muted)));
-        } else if matches!(row.key, RowKey::Repo(_)) && row.expanded {
+        } else if matches!(row.key, RowKey::Group(_) | RowKey::Repo(_)) && row.expanded {
             // The open tree below already says why; keep the repo line calm.
             let calm = Gauge {
                 hint: None,
@@ -296,9 +297,14 @@ pub struct HeaderInfo {
 }
 
 /// Two lines: totals per state, then a pulse strip and live mini bars.
+/// `rows` should hold every repo row, also those inside folded groups
+/// (see [`crate::tree::repo_rows`]).
 pub fn header(rows: &[Row], info: &HeaderInfo, look: &Look, width: u16) -> Vec<Line<'static>> {
     let t = look.theme;
-    let repos: Vec<&Row> = rows.iter().filter(|r| r.depth == 0).collect();
+    let repos: Vec<&Row> = rows
+        .iter()
+        .filter(|r| matches!(r.key, RowKey::Repo(_)))
+        .collect();
     let bold = |c| Style::new().fg(c).add_modifier(Modifier::BOLD);
 
     let mut left = vec![

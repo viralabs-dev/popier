@@ -30,6 +30,8 @@ use crate::tree::{self, Folds, Row, RowKey};
 struct App {
     snapshot: Option<Snapshot>,
     rows: Vec<Row>,
+    /// Every repo row, also inside folded groups, for the header totals.
+    repo_rows: Vec<Row>,
     list: ListState,
     folds: Folds,
     expand: ExpandRequest,
@@ -113,6 +115,11 @@ impl App {
             .as_ref()
             .map(|s| tree::build(s, &self.folds))
             .unwrap_or_default();
+        self.repo_rows = self
+            .snapshot
+            .as_ref()
+            .map(tree::repo_rows)
+            .unwrap_or_default();
         let index = selected_key
             .and_then(|key| self.rows.iter().position(|r| r.key == key))
             .or(if self.rows.is_empty() { None } else { Some(0) });
@@ -139,14 +146,14 @@ impl App {
                 .iter()
                 .enumerate()
                 .skip(current + 1)
-                .find(|(_, r)| r.depth == 0)
+                .find(|(_, r)| matches!(r.key, RowKey::Group(_) | RowKey::Repo(_)))
         } else {
             self.rows
                 .iter()
                 .enumerate()
                 .take(current)
                 .rev()
-                .find(|(_, r)| r.depth == 0)
+                .find(|(_, r)| matches!(r.key, RowKey::Group(_) | RowKey::Repo(_)))
         };
         if let Some((i, _)) = found {
             self.list.select(Some(i));
@@ -160,6 +167,11 @@ impl App {
         };
         let mut needs_fetch = false;
         match &row.key {
+            RowKey::Group(name) => {
+                if !self.folds.collapsed_groups.remove(name) {
+                    self.folds.collapsed_groups.insert(name.clone());
+                }
+            }
             RowKey::Repo(slug) => {
                 if !self.folds.collapsed_repos.remove(slug) {
                     self.folds.collapsed_repos.insert(slug.clone());
@@ -277,6 +289,7 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
     let mut app = App {
         snapshot: None,
         rows: Vec::new(),
+        repo_rows: Vec::new(),
         list: ListState::default(),
         folds: Folds::default(),
         expand: initial_expand,
@@ -535,7 +548,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         rate: rate.remaining.zip(rate.limit),
     };
     frame.render_widget(
-        Paragraph::new(paint::header(&app.rows, &info, &look, head.width))
+        Paragraph::new(paint::header(&app.repo_rows, &info, &look, head.width))
             .style(Style::new().bg(theme.surface)),
         head,
     );
@@ -797,6 +810,7 @@ mod tests {
         let repo = |name: &str, workflows| RepoView {
             name: name.into(),
             slug: format!("o/{name}"),
+            group: (name != "brabo-engine").then(|| "brabo".to_owned()),
             workflows: Ok(workflows),
         };
         Snapshot {
@@ -874,6 +888,7 @@ mod tests {
         let mut app = App {
             snapshot: Some(demo()),
             rows: Vec::new(),
+            repo_rows: Vec::new(),
             list: ListState::default(),
             folds: Folds::default(),
             expand: ExpandRequest::default(),

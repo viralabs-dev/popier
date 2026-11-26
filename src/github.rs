@@ -57,6 +57,29 @@ pub struct WorkflowsPage {
 pub struct WorkflowDto {
     pub id: u64,
     pub name: String,
+    /// `active`, `disabled_manually`, `disabled_inactivity`, ...
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// A repository the authenticated user can see.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoDto {
+    /// `owner/name`.
+    pub full_name: String,
+    pub name: String,
+    pub owner: OwnerDto,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub fork: bool,
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OwnerDto {
+    pub login: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -141,6 +164,25 @@ impl Client {
     pub async fn list_workflows(&self, slug: &str) -> Result<Vec<WorkflowDto>> {
         let url = format!("{API}/repos/{slug}/actions/workflows?per_page=100");
         Ok(self.get_json::<WorkflowsPage>(&url).await?.workflows)
+    }
+
+    /// Every repository the token's user owns, collaborates on, or sees
+    /// through an organization (up to 1000).
+    pub async fn list_user_repos(&self) -> Result<Vec<RepoDto>> {
+        let mut all = Vec::new();
+        for page in 1..=10 {
+            let url = format!(
+                "{API}/user/repos?per_page=100&page={page}&sort=full_name\
+                 &affiliation=owner,collaborator,organization_member"
+            );
+            let batch: Vec<RepoDto> = self.get_json(&url).await?;
+            let last = batch.len() < 100;
+            all.extend(batch);
+            if last {
+                break;
+            }
+        }
+        Ok(all)
     }
 
     /// Jobs (with steps) of the latest attempt of a run.
@@ -311,6 +353,15 @@ mod tests {
         let json = r#"{"total_count":1,"workflows":[{"id":3,"name":"CI","path":".github/workflows/ci.yml","state":"active"}]}"#;
         let page: WorkflowsPage = serde_json::from_str(json).unwrap();
         assert_eq!(page.workflows[0].name, "CI");
+    }
+
+    #[test]
+    fn parses_repos_payload() {
+        let json = r#"[{"id":1,"full_name":"o/r","name":"r","owner":{"login":"o"},
+            "archived":false,"fork":true,"private":true}]"#;
+        let repos: Vec<RepoDto> = serde_json::from_str(json).unwrap();
+        assert_eq!(repos[0].owner.login, "o");
+        assert!(repos[0].fork && !repos[0].disabled);
     }
 
     #[test]

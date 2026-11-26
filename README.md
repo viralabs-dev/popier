@@ -42,6 +42,20 @@ Notifications use `notify-send` (libnotify), available on most Linux desktops.
 
 ## Setup
 
+The quickest start, if you use the `gh` CLI:
+
+```sh
+popier init --discover   # finds your repos and writes ~/.config/popier/config.toml
+```
+
+It lists every repository your GitHub login can see, keeps the ones with active
+workflows (no archived repos or forks), and groups repos of one owner that share
+a name prefix, like `brabo`, `brabo-api` and `brabo-web`. Useful flags:
+`--owner <org>` (repeatable) to limit it to some owners, `--print` to see the
+result without writing it, `--force` to replace an existing config.
+
+Or start from a sample and edit it:
+
 ```sh
 popier init          # writes ~/.config/popier/config.toml
 $EDITOR ~/.config/popier/config.toml
@@ -64,6 +78,16 @@ slug = "your-org/your-repo"
 slug = "your-org/another-repo"
 label = "another"        # optional display name
 branch = "main"          # optional branch filter
+```
+
+A project made of several repositories can be a group. The group gets its own
+row, with the worst state of its repos, and folds like a repo. A slug listed
+only in a group is watched with default options.
+
+```toml
+[[group]]
+name = "brabo"
+repos = ["your-org/brabo", "your-org/brabo-api", "your-org/brabo-web"]
 ```
 
 See [`examples/config.toml`](examples/config.toml) for the full sample.

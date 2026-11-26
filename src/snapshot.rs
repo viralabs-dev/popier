@@ -18,6 +18,8 @@ pub struct Snapshot {
 pub struct RepoView {
     pub name: String,
     pub slug: String,
+    /// `[[group]]` this repository belongs to, if any.
+    pub group: Option<String>,
     /// Latest run of each workflow, or the error that prevented loading them.
     pub workflows: Result<Vec<WorkflowView>, String>,
 }
@@ -80,16 +82,32 @@ impl ExpandRequest {
     }
 }
 
-/// Fetches all repositories concurrently; results keep the config order.
+/// Fetches all repositories concurrently. Grouped repos come first, group by
+/// group in config order; the others follow in config order.
 pub async fn take(client: &Client, config: &Config, expand: &ExpandRequest) -> Snapshot {
     let repos = join_all(
-        config
-            .repos
-            .iter()
+        display_order(config)
+            .into_iter()
             .map(|repo| load_repo(client, config, repo, expand)),
     )
     .await;
     Snapshot { repos }
+}
+
+fn display_order(config: &Config) -> Vec<&RepoConfig> {
+    let find = |slug: &str| config.repos.iter().find(|r| r.slug == slug);
+    let mut order: Vec<&RepoConfig> = config
+        .groups
+        .iter()
+        .flat_map(|g| g.repos.iter().filter_map(|slug| find(slug)))
+        .collect();
+    order.extend(
+        config
+            .repos
+            .iter()
+            .filter(|r| config.group_of(&r.slug).is_none()),
+    );
+    order
 }
 
 async fn load_repo(
@@ -154,6 +172,7 @@ async fn load_repo(
     RepoView {
         name: repo.display_name().to_owned(),
         slug: repo.slug.clone(),
+        group: config.group_of(&repo.slug).map(|g| g.name.clone()),
         workflows,
     }
 }
@@ -248,6 +267,20 @@ mod tests {
             "Release"
         );
         assert_eq!(workflow_label(&run(6, 2, "CI"), &names), "CI");
+    }
+
+    #[test]
+    fn groups_come_first_in_display_order() {
+        let config = Config::parse(
+            "[[repo]]\nslug = \"o/solo\"\n[[repo]]\nslug = \"o/b-api\"\n\
+             [[group]]\nname = \"b\"\nrepos = [\"o/b\", \"o/b-api\"]\n",
+        )
+        .unwrap();
+        let order: Vec<&str> = display_order(&config)
+            .iter()
+            .map(|r| r.slug.as_str())
+            .collect();
+        assert_eq!(order, vec!["o/b", "o/b-api", "o/solo"]);
     }
 
     #[test]

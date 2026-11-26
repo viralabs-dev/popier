@@ -21,6 +21,19 @@ pub struct Config {
     /// Repositories to watch, in display order.
     #[serde(rename = "repo", default)]
     pub repos: Vec<RepoConfig>,
+    /// Named groups of repositories (a project with many repos), in display order.
+    #[serde(rename = "group", default)]
+    pub groups: Vec<GroupConfig>,
+}
+
+/// A project made of several repositories, shown as one collapsible row.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupConfig {
+    pub name: String,
+    /// Slugs of member repositories. A slug without its own `[[repo]]` entry
+    /// is watched with default options.
+    pub repos: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,14 +109,50 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Config = toml::from_str(text)?;
+        let mut config: Config = toml::from_str(text)?;
+        config.add_group_members();
         config.validate()?;
         Ok(config)
     }
 
+    /// Group of a repository, if any.
+    pub fn group_of(&self, slug: &str) -> Option<&GroupConfig> {
+        self.groups
+            .iter()
+            .find(|g| g.repos.iter().any(|r| r == slug))
+    }
+
+    /// Group members listed only inside a `[[group]]` become plain repos.
+    fn add_group_members(&mut self) {
+        for group in &self.groups {
+            for slug in &group.repos {
+                if !self.repos.iter().any(|r| &r.slug == slug) {
+                    self.repos.push(RepoConfig {
+                        slug: slug.clone(),
+                        label: None,
+                        branch: None,
+                    });
+                }
+            }
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if self.repos.is_empty() {
-            bail!("no repositories configured: add at least one [[repo]] entry");
+            bail!(
+                "no repositories configured: add a [[repo]] entry, or run `popier init --discover`"
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        for group in &self.groups {
+            if group.name.trim().is_empty() {
+                bail!("every [[group]] needs a name");
+            }
+            for slug in &group.repos {
+                if !seen.insert(slug.as_str()) {
+                    bail!("repo {slug:?} is in more than one [[group]]");
+                }
+            }
         }
         for repo in &self.repos {
             let parts: Vec<&str> = repo.slug.split('/').collect();
@@ -177,6 +226,26 @@ mod tests {
     #[test]
     fn rejects_empty_repo_list() {
         assert!(Config::parse("[settings]\nrefresh_secs = 60\n").is_err());
+    }
+
+    #[test]
+    fn groups_add_their_members() {
+        let config = Config::parse(
+            "[[group]]\nname = \"brabo\"\nrepos = [\"o/brabo\", \"o/brabo-api\"]\n\
+             [[repo]]\nslug = \"o/brabo-api\"\nlabel = \"api\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.repos.len(), 2);
+        assert_eq!(config.repos[0].display_name(), "api");
+        assert_eq!(config.group_of("o/brabo").unwrap().name, "brabo");
+        assert!(config.group_of("o/other").is_none());
+    }
+
+    #[test]
+    fn rejects_repo_in_two_groups() {
+        let text = "[[group]]\nname = \"a\"\nrepos = [\"o/x\"]\n\
+                    [[group]]\nname = \"b\"\nrepos = [\"o/x\"]\n";
+        assert!(Config::parse(text).is_err());
     }
 
     #[test]

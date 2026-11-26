@@ -126,6 +126,7 @@ mod tests {
             repos: vec![RepoView {
                 name: "api".into(),
                 slug: "o/api".into(),
+                group: None,
                 workflows: Ok(runs
                     .iter()
                     .map(|&(run_id, status, branch)| WorkflowView {
