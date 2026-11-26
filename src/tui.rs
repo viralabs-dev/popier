@@ -30,8 +30,8 @@ use crate::tree::{self, Folds, Row, RowKey};
 struct App {
     snapshot: Option<Snapshot>,
     rows: Vec<Row>,
-    /// Every repo row, also inside folded groups, for the header totals.
-    repo_rows: Vec<Row>,
+    /// Every repo row with its group, also inside folded groups, for the header.
+    repo_rows: Vec<(Option<String>, Row)>,
     list: ListState,
     folds: Folds,
     expand: ExpandRequest,
@@ -146,14 +146,14 @@ impl App {
                 .iter()
                 .enumerate()
                 .skip(current + 1)
-                .find(|(_, r)| matches!(r.key, RowKey::Group(_) | RowKey::Repo(_)))
+                .find(|(_, r)| r.depth == 0)
         } else {
             self.rows
                 .iter()
                 .enumerate()
                 .take(current)
                 .rev()
-                .find(|(_, r)| matches!(r.key, RowKey::Group(_) | RowKey::Repo(_)))
+                .find(|(_, r)| r.depth == 0)
         };
         if let Some((i, _)) = found {
             self.list.select(Some(i));
@@ -170,6 +170,11 @@ impl App {
             RowKey::Group(name) => {
                 if !self.folds.collapsed_groups.remove(name) {
                     self.folds.collapsed_groups.insert(name.clone());
+                }
+            }
+            RowKey::Calm(name) => {
+                if !self.folds.open_calm.remove(name) {
+                    self.folds.open_calm.insert(name.clone());
                 }
             }
             RowKey::Repo(slug) => {
@@ -810,7 +815,7 @@ mod tests {
         let repo = |name: &str, workflows| RepoView {
             name: name.into(),
             slug: format!("o/{name}"),
-            group: (name != "brabo-engine").then(|| "brabo".to_owned()),
+            group: name.starts_with("brabo").then(|| "brabo".to_owned()),
             workflows: Ok(workflows),
         };
         Snapshot {
@@ -880,6 +885,15 @@ mod tests {
                         wf(6, "Release", Status::Success, 9000, 8000, None),
                     ],
                 ),
+                repo(
+                    "brabo-contracts",
+                    vec![wf(7, "CI", Status::Success, 4000, 3800, None)],
+                ),
+                repo(
+                    "brabo-qa",
+                    vec![wf(8, "CI", Status::Success, 5000, 4700, None)],
+                ),
+                repo("hud", vec![wf(9, "CI", Status::Success, 700, 520, None)]),
             ],
         }
     }
