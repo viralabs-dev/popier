@@ -22,6 +22,7 @@ use crate::github::Client;
 use crate::logs;
 use crate::notify;
 use crate::snapshot::{self, ExpandRequest, Snapshot};
+use crate::status::Status;
 use crate::tree::{self, Folds, Row, RowKey};
 
 struct App {
@@ -54,8 +55,9 @@ struct LogTarget {
 struct LogView {
     title: String,
     job_id: u64,
-    /// Step bounds; `None` shows the whole job.
-    step: Option<(Option<String>, Option<String>)>,
+    /// Selected step and the spans of every step of the job; `None` shows
+    /// the whole job.
+    step: Option<(u32, Vec<logs::StepSpan>)>,
     /// Toggled with `w`: whole job instead of the step.
     whole: bool,
     lines: Vec<String>,
@@ -72,8 +74,13 @@ impl LogView {
             None => vec!["loading log…".into()],
             Some(Err(err)) => vec![format!("cannot load log: {err}")],
             Some(Ok(log)) => match (&self.step, self.whole) {
-                (Some((start, end)), false) => {
-                    match logs::slice_step(log, start.as_deref(), end.as_deref()) {
+                (Some((number, spans)), false) => {
+                    let by_marker = logs::cut_step(log, spans, *number);
+                    let by_time = || {
+                        let span = spans.iter().find(|s| s.number == *number)?;
+                        logs::slice_step(log, span.started.as_deref(), span.completed.as_deref())
+                    };
+                    match by_marker.or_else(by_time) {
                         Some(lines) => logs::tail(lines, logs::STEP_TAIL),
                         None => {
                             self.note = Some("step not found in log; showing end of job".into());
@@ -196,7 +203,19 @@ impl App {
                 view: LogView {
                     title,
                     job_id: job.id,
-                    step: step.map(|s| (s.started_at.clone(), s.completed_at.clone())),
+                    step: step.map(|s| {
+                        let spans = job
+                            .steps
+                            .iter()
+                            .map(|s| logs::StepSpan {
+                                number: s.number,
+                                started: s.started_at.clone(),
+                                completed: s.completed_at.clone(),
+                                skipped: s.status == Status::Skipped,
+                            })
+                            .collect();
+                        (s.number, spans)
+                    }),
                     whole: false,
                     lines: Vec::new(),
                     note: None,
@@ -636,10 +655,19 @@ mod tests {
     use super::*;
 
     fn view(step: Option<(&str, &str)>) -> LogView {
+        let step = step.map(|(a, b)| {
+            let span = logs::StepSpan {
+                number: 1,
+                started: Some(a.to_owned()),
+                completed: Some(b.to_owned()),
+                skipped: false,
+            };
+            (1, vec![span])
+        });
         LogView {
             title: String::new(),
             job_id: 7,
-            step: step.map(|(a, b)| (Some(a.to_owned()), Some(b.to_owned()))),
+            step,
             whole: false,
             lines: Vec::new(),
             note: None,
