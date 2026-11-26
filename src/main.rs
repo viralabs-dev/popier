@@ -69,6 +69,10 @@ enum Cmd {
         /// Repeat for more than one.
         #[arg(long, value_name = "OWNER", requires = "discover")]
         owner: Vec<String>,
+        /// With --discover: only public repositories (handy for a demo or a
+        /// screen you share).
+        #[arg(long, requires = "discover")]
+        public: bool,
         /// Print the config instead of writing it.
         #[arg(long)]
         print: bool,
@@ -88,6 +92,7 @@ async fn main() -> Result<()> {
             force,
             discover,
             owner,
+            public,
             print,
         } => {
             if !print && path.exists() && !force {
@@ -97,7 +102,7 @@ async fn main() -> Result<()> {
                 );
             }
             let text = if discover {
-                discover_config(&owner).await?
+                discover_config(&owner, public).await?
             } else {
                 config::SAMPLE.to_owned()
             };
@@ -141,17 +146,22 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn discover_config(owners: &[String]) -> Result<String> {
+async fn discover_config(owners: &[String], public_only: bool) -> Result<String> {
     let client = github::Client::new(github::resolve_token()?)?;
     eprintln!("looking for your repositories on GitHub...");
-    let report = discover::discover(&client, owners).await?;
+    let report = discover::discover(&client, owners, public_only).await?;
     let scope = if owners.is_empty() {
         "visible to you".to_owned()
     } else {
         format!("in {}", owners.join(", "))
     };
+    let kind = if public_only {
+        "public repositories"
+    } else {
+        "repositories"
+    };
     eprintln!(
-        "{} repositories {scope}, {} archived or forks skipped, {} without active workflows",
+        "{} {kind} {scope}, {} archived or forks skipped, {} without active workflows",
         report.seen, report.skipped_archived_or_fork, report.without_workflows
     );
     if report.found.is_empty() {

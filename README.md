@@ -97,7 +97,8 @@ popier init --discover   # finds your repos and writes ~/.config/popier/config.t
 It lists every repository your GitHub login can see, keeps the ones with active
 workflows (no archived repos or forks), and groups repos of one owner that share
 a name prefix, like `brabo`, `brabo-api` and `brabo-web`. Useful flags:
-`--owner <org>` (repeatable) to limit it to some owners, `--print` to see the
+`--owner <org>` (repeatable) to limit it to some owners, `--public` to keep
+only public repositories (handy for a demo or a shared screen), `--print` to see the
 result without writing it, `--force` to replace an existing config.
 
 Or start from a sample and edit it:
