@@ -29,7 +29,7 @@ use crate::snapshot::ExpandRequest;
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// Config file (default: ~/.config/popier/config.toml).
+    /// Config file (default: ~/.config/popier/config.toml, %APPDATA%\popier\config.toml on Windows).
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
@@ -87,6 +87,7 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    update::remove_parked();
     if cli.update {
         return update::run().await;
     }

@@ -11,8 +11,15 @@ jobs:
   build:
     strategy:
       matrix:
-        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
-    runs-on: ubuntu-latest
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, bin: popier }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, bin: popier }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, bin: popier.exe }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, so every step is the same script.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,11 +36,15 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Check the binary can update itself
         # Installed copies get new releases through --update; never ship one without it.
-        run: target/${{ matrix.target }}/release/popier --help | grep -q -- '--update'
+        # Not `| grep -q`: `shell: bash` sets pipefail, and grep's early exit
+        # would fail the step with SIGPIPE.
+        run: |
+          help=$(target/${{ matrix.target }}/release/${{ matrix.bin }} --help)
+          grep -q -- '--update' <<<"$help"
       - name: Package
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/popier README.md LICENSE-MIT LICENSE-APACHE examples/config.toml dist/
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} README.md LICENSE-MIT LICENSE-APACHE examples/config.toml dist/
           tar -czf popier-${{ matrix.target }}.tar.gz -C dist .
           sha256sum popier-${{ matrix.target }}.tar.gz > popier-${{ matrix.target }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4

@@ -11,7 +11,7 @@ failing steps called out, logs one key away, and a desktop ping when `main` brea
 [![Release](https://img.shields.io/github/v/release/viralabs-dev/popier?style=flat-square&color=informational)](https://github.com/viralabs-dev/popier/releases/latest)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#license)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org)
-[![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white&style=flat-square)](#install)
+[![Platform: Linux | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey?style=flat-square)](#install)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white&style=flat-square)](https://ko-fi.com/daneiel)
 
 <img src="docs/assets/dashboard.png" alt="popier dashboard: a project group with 6 repos, one failing test step highlighted in red, a deploy running at 60%, a queued CI, and three green repos folded into one line" width="100%" />
@@ -79,9 +79,21 @@ installs it into `~/.local/bin` (set `POPIER_INSTALL_DIR` for another folder,
 `POPIER_VERSION=v0.1.0` for a given release). The script is
 [`docs/install.sh`](docs/install.sh), if you'd rather read it first.
 
+**One command (Windows x86_64, PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/viralabs-dev/popier/main/docs/install.ps1 | iex
+```
+
+It does the same with `popier-x86_64-pc-windows-msvc.tar.gz`: checks its
+SHA-256, installs `popier.exe` into `%LOCALAPPDATA%\Programs\popier` and adds
+that folder to your user `PATH` (same `POPIER_INSTALL_DIR` and `POPIER_VERSION`
+options). The script is [`docs/install.ps1`](docs/install.ps1).
+
 **Update:** `popier --update` replaces the binary with the latest release the
 same way, checking its SHA-256 first; if the download or the checksum fails,
-nothing is changed. Every release ships `--update` (the release build checks for
+nothing is changed. On Windows the running `popier.exe` is renamed to
+`popier.exe.old` and deleted on the next start. Every release ships `--update` (the release build checks for
 it), and each batch of new features merged into `main` gets a release, so
 `popier --update` always brings the latest. A popier built from source updates with
 `cargo install --git https://github.com/viralabs-dev/popier --force`.
@@ -101,7 +113,15 @@ install -m 755 popier ~/.local/bin/
 cargo install --git https://github.com/viralabs-dev/popier
 ```
 
-Notifications use `notify-send` (libnotify), available on most Linux desktops.
+**Windows notes:** from source it needs [Rust](https://rustup.rs) and the MSVC
+build tools that `rustup` offers to install, and lands in
+`%USERPROFILE%\.cargo\bin\popier.exe`. popier reads its config from
+`%APPDATA%\popier\config.toml` (themes in `%APPDATA%\popier\themes`). It needs
+the [`gh` CLI](https://cli.github.com) logged in, or `GITHUB_TOKEN` set, as on
+Linux. Use Windows Terminal for full colors and mouse support.
+
+Notifications use `notify-send` (libnotify) on Linux, available on most
+desktops, and a native toast through Windows PowerShell on Windows.
 
 ## Setup
 
@@ -266,7 +286,7 @@ storage URL without sending your token there.
 ## Notifications
 
 While the dashboard is open, popier sends a desktop notification
-(`notify-send`) when a workflow that was in any other state starts failing,
+(`notify-send` on Linux, a toast on Windows) when a workflow that was in any other state starts failing,
 and a low-urgency one when a failing workflow passes again. Nothing is sent
 for failures that were already there when popier started, and each run is
 announced at most once. Turn it off with `notify = false`, or limit it with

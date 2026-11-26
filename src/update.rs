@@ -23,10 +23,42 @@ struct Asset {
     browser_download_url: String,
 }
 
+/// File name of the binary inside a release archive.
+const BIN: &str = if cfg!(windows) {
+    "popier.exe"
+} else {
+    "popier"
+};
+
 /// Release target of this build, or `None` where no prebuilt binary exists.
 fn target() -> Option<&'static str> {
-    (cfg!(target_os = "linux") && cfg!(target_arch = "x86_64"))
-        .then_some("x86_64-unknown-linux-musl")
+    if !cfg!(target_arch = "x86_64") {
+        None
+    } else if cfg!(target_os = "linux") {
+        Some("x86_64-unknown-linux-musl")
+    } else if cfg!(windows) {
+        Some("x86_64-pc-windows-msvc")
+    } else {
+        None
+    }
+}
+
+/// Where a Windows update parks the binary it replaced: a running `.exe`
+/// can be renamed but not overwritten or deleted.
+fn parked(exe: &Path) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(".old");
+    exe.with_file_name(name)
+}
+
+/// Deletes the binary a previous Windows update parked. Best effort: it
+/// fails while that old copy is still running, and the next start retries.
+pub fn remove_parked() {
+    if cfg!(windows)
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let _ = std::fs::remove_file(parked(&exe));
+    }
 }
 
 pub async fn run() -> Result<()> {
@@ -147,14 +179,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The `popier` file inside a `.tar.gz`.
+/// The popier binary (`popier`, or `popier.exe` on Windows) inside a `.tar.gz`.
 fn extract(archive: &[u8]) -> Result<Vec<u8>> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
     for entry in tar.entries()? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
-        if path.file_name().is_some_and(|n| n == "popier") && entry.header().entry_type().is_file()
-        {
+        if path.file_name().is_some_and(|n| n == BIN) && entry.header().entry_type().is_file() {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes)?;
             return Ok(bytes);
@@ -165,14 +196,32 @@ fn extract(archive: &[u8]) -> Result<Vec<u8>> {
 
 /// Writes `binary` next to `exe` and renames it over `exe`, so a running
 /// popier keeps working and a failure leaves the old binary in place.
+///
+/// Windows can't replace a running `.exe`, but it can rename it: the old one
+/// is parked as `popier.exe.old` (deleted on a later start) and the new one
+/// takes its name. If that last rename fails, the old one is put back.
 fn replace(exe: &Path, binary: &[u8]) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let dir = exe.parent().context("the binary has no parent directory")?;
     let tmp: PathBuf = dir.join(".popier.update");
     let write = || -> std::io::Result<()> {
         std::fs::write(&tmp, binary)?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-        std::fs::rename(&tmp, exe)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        if cfg!(windows) {
+            let old = parked(exe);
+            let _ = std::fs::remove_file(&old);
+            std::fs::rename(exe, &old)?;
+            if let Err(e) = std::fs::rename(&tmp, exe) {
+                let _ = std::fs::rename(&old, exe);
+                return Err(e);
+            }
+            Ok(())
+        } else {
+            std::fs::rename(&tmp, exe)
+        }
     };
     write().map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -227,20 +276,21 @@ mod tests {
         header.set_size(body.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
-        builder
-            .append_data(&mut header, "popier", &body[..])
-            .unwrap();
+        builder.append_data(&mut header, BIN, &body[..]).unwrap();
         let archive = builder.into_inner().unwrap().finish().unwrap();
         let binary = extract(&archive).unwrap();
         assert_eq!(binary, body);
 
         let dir = std::env::temp_dir().join(format!("popier-update-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join("popier");
+        let exe = dir.join(BIN);
         std::fs::write(&exe, b"old").unwrap();
         replace(&exe, &binary).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), body);
         assert!(!dir.join(".popier.update").exists());
+        if cfg!(windows) {
+            assert_eq!(std::fs::read(parked(&exe)).unwrap(), b"old");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(hex(&Sha256::digest(b"abc"))[..8], *"ba7816bf");

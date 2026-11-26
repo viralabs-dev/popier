@@ -32,3 +32,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+  windows:
+    # popier ships a Windows binary: lint, test and build it there too.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Release build
+        run: cargo build --release --locked
+      - name: Package as the release does
+        shell: bash
+        run: |
+          # No `| grep -q`: under pipefail its early exit kills the writer (SIGPIPE, 141).
+          help=$(target/release/popier.exe --help)
+          grep -q -- '--update' <<<"$help"
+          mkdir dist && cp target/release/popier.exe README.md dist/
+          tar -czf popier-test.tar.gz -C dist .
+          listing=$(tar -tzf popier-test.tar.gz)
+          grep -q 'popier.exe' <<<"$listing"
+      - name: Install script parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/docs/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }

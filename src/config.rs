@@ -45,7 +45,7 @@ pub struct Settings {
     pub expand: ExpandMode,
     /// How many recent runs to scan per repo when picking the latest run of each workflow.
     pub runs_per_repo: u8,
-    /// Desktop notification (`notify-send`) when a workflow starts failing or recovers.
+    /// Desktop notification (`notify-send` on Linux, a toast on Windows) when a workflow starts failing or recovers.
     pub notify: bool,
     /// Only notify for these branches. Empty means every branch.
     pub notify_branches: Vec<String>,
