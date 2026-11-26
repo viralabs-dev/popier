@@ -181,6 +181,7 @@ popier -c other.toml # use another config file
 | `↑` `↓` / `j` `k` | move |
 | `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs); on a step, show the end of its log right below it |
 | `Tab` / `Shift+Tab` | next / previous project or repo (wraps around: after the last comes the first) |
+| `f` | focus: show only the project or repo of the selected row (`f` or `Esc` brings back everything; `/` searches inside it) |
 | `/` | search: the tree shows only what matches as you type (names and branches), or `#152` for a PR; `Esc` clears |
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
 | `a` | open everything, or close everything when anything is open |
@@ -190,7 +191,7 @@ popier -c other.toml # use another config file
 | mouse | click a row to select it and fold or unfold it; the wheel scrolls (hold `Shift` to select text) |
 | `t` | next color theme (noite → brasa → papel → alto-contraste → terminal) |
 | `o` | open the selected item in the browser |
-| `q` / `Esc` | quit (`Esc` clears an active filter first) |
+| `q` / `Esc` | quit (`Esc` clears an active filter, then leaves focus, first) |
 
 ## Look and themes
 

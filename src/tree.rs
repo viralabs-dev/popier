@@ -510,6 +510,19 @@ pub fn search(rows: Vec<Row>, query: &str) -> Vec<Row> {
         .collect()
 }
 
+/// The top-level row with `key` and everything under it; empty when it is gone.
+pub fn subtree(rows: Vec<Row>, key: &RowKey) -> Vec<Row> {
+    let mut inside = false;
+    rows.into_iter()
+        .filter(|row| {
+            if row.depth == 0 {
+                inside = row.key == *key;
+            }
+            inside
+        })
+        .collect()
+}
+
 /// Folds for a search: every group, calm line, repo and loaded workflow open,
 /// so matches deep in the tree show; open step logs stay as they were.
 pub fn search_folds(snapshot: &Snapshot, folds: &Folds) -> Folds {
@@ -1129,5 +1142,15 @@ mod tests {
             Some(&RowKey::Group("proj".into()))
         );
         assert_eq!(found.last().map(|r| &r.key), Some(&RowKey::Step(1, 0, 1)));
+    }
+    #[test]
+    fn subtree_keeps_one_top_level_row() {
+        let rows = build(&sample(), &Folds::default());
+        let web = subtree(rows.clone(), &RowKey::Repo("o/web".into()));
+        assert_eq!(web.len(), 2);
+        assert_eq!(web[0].key, RowKey::Repo("o/web".into()));
+        let api = subtree(rows.clone(), &RowKey::Repo("o/api".into()));
+        assert_eq!(api.len(), 5);
+        assert!(subtree(rows, &RowKey::Repo("o/gone".into())).is_empty());
     }
 }
