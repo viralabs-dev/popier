@@ -75,6 +75,8 @@ pub struct RepoDto {
     pub fork: bool,
     #[serde(default)]
     pub disabled: bool,
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -168,12 +170,15 @@ impl Client {
 
     /// Every repository the token's user owns, collaborates on, or sees
     /// through an organization (up to 1000).
-    pub async fn list_user_repos(&self) -> Result<Vec<RepoDto>> {
+    /// Repositories the user can see; with `public_only`, public ones only.
+    pub async fn list_user_repos(&self, public_only: bool) -> Result<Vec<RepoDto>> {
+        let visibility = if public_only { "public" } else { "all" };
         let mut all = Vec::new();
         for page in 1..=10 {
             let url = format!(
                 "{API}/user/repos?per_page=100&page={page}&sort=full_name\
-                 &affiliation=owner,collaborator,organization_member"
+                 &affiliation=owner,collaborator,organization_member\
+                 &visibility={visibility}"
             );
             let batch: Vec<RepoDto> = self.get_json(&url).await?;
             let last = batch.len() < 100;

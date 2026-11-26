@@ -34,12 +34,16 @@ pub struct Report {
     pub without_workflows: usize,
 }
 
-/// Lists the user's repositories, keeping only `owners` when it is not empty.
-pub async fn discover(client: &Client, owners: &[String]) -> Result<Report> {
+/// Lists the user's repositories, keeping only `owners` when it is not empty,
+/// and only public ones when `public_only` is set.
+pub async fn discover(client: &Client, owners: &[String], public_only: bool) -> Result<Report> {
     let repos: Vec<RepoDto> = client
-        .list_user_repos()
+        .list_user_repos(public_only)
         .await?
         .into_iter()
+        // The API already filters by visibility; checking again keeps a
+        // private repo out even if it ever does not.
+        .filter(|r| !(public_only && r.private))
         .filter(|r| {
             owners.is_empty()
                 || owners
