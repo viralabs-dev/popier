@@ -739,27 +739,46 @@ fn draw_log(
     let scroll = view.scroll.map_or(max_scroll, |s| s.min(max_scroll));
     view.scroll = view.scroll.map(|_| scroll);
 
-    let lines: Vec<Line> = view.lines.iter().map(|l| log_line(l, theme)).collect();
+    let lines = log_lines(&view.lines, theme);
     let scope = if view.step.is_none() || view.whole {
         "job"
     } else {
         "step"
     };
-    let title = Line::from(vec![
+    let mut title = vec![Span::styled(
+        " ◆ log ",
+        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+    )];
+    let parts: Vec<&str> = view.title.split(" › ").collect();
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            title.push(Span::styled(" › ", Style::new().fg(theme.faint)));
+        }
+        let style = if i + 1 == parts.len() {
+            Style::new().fg(theme.ink).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme.muted)
+        };
+        title.push(Span::styled(part.to_string(), style));
+    }
+    title.push(Span::raw(" "));
+    let chip = Line::from(vec![
         Span::styled(
-            " ◆ ",
-            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            format!(" {scope} "),
+            Style::new()
+                .fg(theme.on_accent)
+                .bg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("log ({scope}) · {} ", view.title),
-            Style::new().fg(theme.ink).add_modifier(Modifier::BOLD),
-        ),
-    ]);
+        Span::raw(" "),
+    ])
+    .right_aligned();
     let paragraph = Paragraph::new(lines)
         .block(
             Block::bordered()
                 .border_style(Style::new().fg(theme.line))
-                .title(title),
+                .title(Line::from(title))
+                .title(chip),
         )
         .style(Style::new().fg(theme.ink).bg(theme.bg))
         .scroll((scroll as u16, 0));
@@ -775,14 +794,22 @@ fn draw_log(
         ],
         look,
     );
+    let shown = (scroll + height).min(view.lines.len());
+    let errors = view
+        .lines
+        .iter()
+        .filter(|l| l.starts_with("##[error]"))
+        .count();
     spans.push(Span::styled(
-        format!(
-            "{}/{} lines",
-            (scroll + height).min(view.lines.len()),
-            view.lines.len()
-        ),
+        format!("{shown}/{} lines", view.lines.len()),
         Style::new().fg(theme.muted),
     ));
+    if errors > 0 {
+        spans.push(Span::styled(
+            format!("  ✗ {errors} error{}", if errors == 1 { "" } else { "s" }),
+            Style::new().fg(theme.failure),
+        ));
+    }
     if let Some(note) = &view.note {
         spans.push(Span::styled(
             format!("  {note}"),
@@ -795,18 +822,91 @@ fn draw_log(
     );
 }
 
-/// Colors GitHub's log markers (`##[error]`, `##[group]`, …).
-fn log_line(line: &str, theme: &Theme) -> Line<'static> {
-    let style = if line.starts_with("##[error]") {
+/// Draws log lines with a line-number gutter and GitHub's markers
+/// (`##[error]`, `##[warning]`, `##[group]`, `##[command]`, …) as glyphs.
+/// Lines inside a group are indented. One output line per input line, so
+/// scrolling stays in step with `view.lines`.
+fn log_lines(lines: &[String], theme: &Theme) -> Vec<Line<'static>> {
+    let digits = lines.len().max(1).to_string().len();
+    let mut depth = 0usize;
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let (mark, text, style) = log_marker(line, theme);
+            if line.starts_with("##[endgroup]") {
+                depth = depth.saturating_sub(1);
+            }
+            let indent = "  ".repeat(depth);
+            if line.starts_with("##[group]") {
+                depth += 1;
+            }
+            let gutter_style = match mark {
+                Some((_, s)) => s,
+                None => Style::new().fg(theme.faint),
+            };
+            let mut spans = vec![
+                Span::styled(format!("{:>digits$} ", i + 1), gutter_style),
+                Span::styled("│ ", Style::new().fg(theme.line)),
+                Span::raw(indent),
+            ];
+            if let Some((glyph, s)) = mark {
+                spans.push(Span::styled(format!("{glyph} "), s));
+            }
+            spans.push(Span::styled(text, style));
+            Line::from(spans)
+        })
+        .collect()
+}
+
+type Mark = Option<(&'static str, Style)>;
+
+fn log_marker(line: &str, theme: &Theme) -> (Mark, String, Style) {
+    let bold = Modifier::BOLD;
+    let rules: [(&str, Mark, Style); 7] = [
+        (
+            "##[error]",
+            Some(("✗", Style::new().fg(theme.failure).add_modifier(bold))),
+            Style::new().fg(theme.failure),
+        ),
+        (
+            "##[warning]",
+            Some(("!", Style::new().fg(theme.ink).add_modifier(bold))),
+            Style::new().fg(theme.ink),
+        ),
+        (
+            "##[notice]",
+            Some(("i", Style::new().fg(theme.accent))),
+            Style::new().fg(theme.ink),
+        ),
+        (
+            "##[group]",
+            Some(("▾", Style::new().fg(theme.muted))),
+            Style::new().fg(theme.ink).add_modifier(bold),
+        ),
+        ("##[endgroup]", None, Style::new().fg(theme.faint)),
+        (
+            "##[command]",
+            Some(("$", Style::new().fg(theme.accent).add_modifier(bold))),
+            Style::new().fg(theme.ink).add_modifier(bold),
+        ),
+        ("##[debug]", None, Style::new().fg(theme.muted)),
+    ];
+    for (prefix, mark, style) in rules {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return (mark, rest.to_owned(), style);
+        }
+    }
+    // Plain lines that say something failed read in the failure color.
+    let failed = line.contains("FAILED")
+        || line.contains("panicked at")
+        || line.trim_start().starts_with("error");
+    let style = if failed {
         Style::new().fg(theme.failure)
-    } else if line.starts_with("##[warning]") {
-        Style::new().fg(theme.running)
-    } else if line.starts_with("##[group]") || line.starts_with("##[endgroup]") {
-        Style::new().fg(theme.muted).add_modifier(Modifier::BOLD)
     } else {
-        Style::new()
+        Style::new().fg(theme.ink)
     };
-    Line::from(Span::styled(line.to_owned(), style))
+    (None, line.to_owned(), style)
 }
 
 fn open_url(url: &str) -> std::io::Result<()> {
@@ -1011,6 +1111,61 @@ mod tests {
         }
     }
 
+    fn sample_log() -> LogView {
+        let lines = [
+            "##[group]Run cargo test --locked",
+            "##[command]cargo test --locked",
+            "    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.20s",
+            "     Running unittests src/main.rs (target/debug/deps/api-3f2c)",
+            "running 42 tests",
+            "test auth::rejects_expired_token ... ok",
+            "test billing::rounds_half_even ... ok",
+            "test orders::cancels_after_payment ... FAILED",
+            "test orders::lists_by_customer ... ok",
+            "##[endgroup]",
+            "failures:",
+            "---- orders::cancels_after_payment stdout ----",
+            "thread 'orders::cancels_after_payment' panicked at src/orders.rs:118:9:",
+            "assertion `left == right` failed",
+            "  left: Refunded",
+            " right: Cancelled",
+            "##[warning]1 test was ignored",
+            "test result: FAILED. 41 passed; 1 failed; 0 ignored",
+            "##[error]Process completed with exit code 101.",
+        ];
+        LogView {
+            title: "api › CI › test › 3. Run tests".into(),
+            job_id: 7,
+            step: None,
+            whole: false,
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+            note: None,
+            scroll: None,
+        }
+    }
+
+    #[test]
+    fn log_lines_keep_one_line_per_input_and_show_markers() {
+        let theme = Theme::builtin("noite").unwrap();
+        let view = sample_log();
+        let lines = log_lines(&view.lines, &theme);
+        assert_eq!(lines.len(), view.lines.len());
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(text(&lines[0]), " 1 │ ▾ Run cargo test --locked");
+        assert_eq!(text(&lines[1]), " 2 │   $ cargo test --locked");
+        assert_eq!(text(&lines[9]), "10 │ ");
+        assert_eq!(
+            text(&lines[18]),
+            "19 │ ✗ Process completed with exit code 101."
+        );
+        assert_eq!(lines[18].spans[0].style.fg, Some(theme.failure));
+    }
+
     fn demo_app(theme: &str) -> App {
         let mut app = App {
             snapshot: Some(demo()),
@@ -1071,6 +1226,10 @@ mod tests {
             {
                 app.details = true;
                 app.list.select(Some(row));
+            }
+            // POPIER_LOG=1 opens the log panel on a sample failing step.
+            if std::env::var("POPIER_LOG").is_ok() {
+                app.log_view = Some(sample_log());
             }
             let (w, h) = (140, 26);
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
