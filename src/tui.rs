@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
 use crate::github::Client;
+use crate::notify;
 use crate::snapshot::{self, ExpandRequest, Snapshot};
 use crate::tree::{self, Folds, Row, RowKey};
 
@@ -29,6 +30,8 @@ struct App {
     loading: bool,
     message: Option<String>,
     last_refresh: Option<Instant>,
+    /// Present when desktop notifications are enabled.
+    watcher: Option<notify::Watcher>,
 }
 
 impl App {
@@ -162,6 +165,10 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         loading: true,
         message: None,
         last_refresh: None,
+        watcher: config
+            .settings
+            .notify
+            .then(|| notify::Watcher::new(config.settings.notify_branches.clone())),
     };
 
     let mut terminal = ratatui::init();
@@ -193,6 +200,14 @@ fn ui_loop(
 
     loop {
         while let Ok(snap) = snap_rx.try_recv() {
+            if let Some(watcher) = app.watcher.as_mut() {
+                for event in watcher.observe(&snap) {
+                    notify::send(&event);
+                    if event.change == notify::Change::Failed {
+                        app.message = Some(format!("✗ {} › {} failed", event.repo, event.workflow));
+                    }
+                }
+            }
             app.snapshot = Some(snap);
             app.loading = false;
             app.last_refresh = Some(Instant::now());

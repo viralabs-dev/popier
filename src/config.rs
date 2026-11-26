@@ -30,6 +30,10 @@ pub struct Settings {
     pub expand: ExpandMode,
     /// How many recent runs to scan per repo when picking the latest run of each workflow.
     pub runs_per_repo: u8,
+    /// Desktop notification (`notify-send`) when a workflow starts failing or recovers.
+    pub notify: bool,
+    /// Only notify for these branches. Empty means every branch.
+    pub notify_branches: Vec<String>,
 }
 
 impl Default for Settings {
@@ -38,6 +42,8 @@ impl Default for Settings {
             refresh_secs: 60,
             expand: ExpandMode::Attention,
             runs_per_repo: 30,
+            notify: true,
+            notify_branches: Vec::new(),
         }
     }
 }
@@ -124,6 +130,19 @@ mod tests {
         let config = Config::parse("[[repo]]\nslug = \"a/b\"\n").unwrap();
         assert_eq!(config.settings.refresh_secs, 60);
         assert_eq!(config.repos[0].display_name(), "a/b");
+    }
+
+    #[test]
+    fn notify_settings() {
+        let config = Config::parse("[[repo]]\nslug = \"a/b\"\n").unwrap();
+        assert!(config.settings.notify);
+        assert!(config.settings.notify_branches.is_empty());
+        let config = Config::parse(
+            "[settings]\nnotify = false\nnotify_branches = [\"main\"]\n[[repo]]\nslug = \"a/b\"\n",
+        )
+        .unwrap();
+        assert!(!config.settings.notify);
+        assert_eq!(config.settings.notify_branches, vec!["main"]);
     }
 
     #[test]

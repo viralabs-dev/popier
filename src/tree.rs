@@ -224,6 +224,7 @@ mod tests {
                     slug: "o/api".into(),
                     workflows: Ok(vec![
                         WorkflowView {
+                            workflow_id: 10,
                             run_id: 1,
                             name: "CI".into(),
                             branch: Some("main".into()),
@@ -241,6 +242,7 @@ mod tests {
                             }])),
                         },
                         WorkflowView {
+                            workflow_id: 20,
                             run_id: 2,
                             name: "Lint".into(),
                             branch: None,
