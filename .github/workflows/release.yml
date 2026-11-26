@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: endsWith(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/popier README.md LICENSE-MIT LICENSE-APACHE examples/config.toml dist/
+          tar -czf popier-${{ matrix.target }}.tar.gz -C dist .
+          sha256sum popier-${{ matrix.target }}.tar.gz > popier-${{ matrix.target }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: popier-${{ matrix.target }}
+          path: popier-${{ matrix.target }}.tar.gz*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            -R "$GITHUB_REPOSITORY" --title "popier $GITHUB_REF_NAME" --generate-notes
