@@ -79,10 +79,19 @@ popier -c other.toml # use another config file
 | `↑` `↓` / `j` `k` | move |
 | `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs) |
 | `Tab` / `Shift+Tab` | next / previous repo |
+| `/` | filter by part of a branch name, or `#152` for a PR (applies as you type; `Esc` clears) |
 | `a` | toggle expanding every workflow |
 | `r` | refresh now |
 | `o` | open the selected item in the browser |
-| `q` / `Esc` | quit |
+| `q` / `Esc` | quit (`Esc` clears an active filter first) |
+
+## Filtering
+
+`/` opens a filter field in the footer. Text matches part of the head branch
+(case-insensitive); `#152` matches runs of pull request 152. The filter applies
+to the recent runs already scanned per repo (`runs_per_repo`), so a branch with
+no run among them shows as "(no runs)". Notifications pause while a filter is
+on. For a permanent per-repo branch filter, use `branch` in the config.
 
 ## Notifications
 

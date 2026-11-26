@@ -44,6 +44,11 @@ impl Watcher {
         }
     }
 
+    /// Forgets the previous snapshot, so the next one is silent.
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+
     /// Records `snapshot` and returns the changes worth announcing.
     pub fn observe(&mut self, snapshot: &Snapshot) -> Vec<Event> {
         let mut current = HashMap::new();

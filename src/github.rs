@@ -31,6 +31,14 @@ pub struct RunDto {
     pub status: Option<String>,
     pub conclusion: Option<String>,
     pub html_url: String,
+    /// PRs whose head is this run's commit (empty for runs not tied to a PR).
+    #[serde(default)]
+    pub pull_requests: Vec<PullRequestRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequestRef {
+    pub number: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
