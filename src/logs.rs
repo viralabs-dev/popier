@@ -52,6 +52,55 @@ pub fn strip_timestamp(line: &str) -> &str {
     }
 }
 
+/// A log line made safe to print: ANSI escape sequences (colors, cursor
+/// moves, window titles, hyperlinks) and other control characters removed,
+/// tabs turned into spaces. Logs are written by whatever a workflow runs, so
+/// they must never drive the terminal.
+pub fn clean(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters and intermediates, then one final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC, DCS, SOS, PM, APC: up to BEL or ESC \.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // Two-byte escapes (ESC 7, ESC c, ...).
+                _ => {}
+            },
+            // C1 CSI.
+            '\u{9b}' => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            '\t' => out.push_str("    "),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Lines of `log` that belong to the step between `started` and `completed`
 /// (GitHub timestamps, second precision). `None` when nothing matched, so
 /// the caller can fall back to the whole job.
@@ -69,7 +118,7 @@ pub fn slice_step(
             inside = second >= start && end.is_none_or(|end| second <= end);
         }
         if inside {
-            out.push(strip_timestamp(line).to_owned());
+            out.push(clean(strip_timestamp(line)));
         }
     }
     (!out.is_empty()).then_some(out)
@@ -86,7 +135,7 @@ pub fn cut_step(log: &str, steps: &[StepSpan], number: u32) -> Option<Vec<String
         return Some(
             lines[range]
                 .iter()
-                .map(|l| strip_timestamp(l).to_owned())
+                .map(|l| clean(strip_timestamp(l)))
                 .collect(),
         );
     }
@@ -142,7 +191,7 @@ pub fn cut_step(log: &str, steps: &[StepSpan], number: u32) -> Option<Vec<String
     Some(
         lines[from..to]
             .iter()
-            .map(|l| strip_timestamp(l).to_owned())
+            .map(|l| clean(strip_timestamp(l)))
             .collect(),
     )
 }
@@ -250,7 +299,7 @@ fn same_command(marker: &str, step_name: &str) -> bool {
 
 /// Every line of the job log, timestamps removed.
 pub fn whole_job(log: &str) -> Vec<String> {
-    log.lines().map(|l| strip_timestamp(l).to_owned()).collect()
+    log.lines().map(|l| clean(strip_timestamp(l))).collect()
 }
 
 /// Keeps the last `n` lines.
@@ -525,6 +574,25 @@ continuation without stamp
         let mut steps = post_steps();
         steps.insert(5, named(16, "Post Run extra@v1", "03:52:37", "03:52:37"));
         assert_eq!(cut_step(POST_LOG, &steps, 13), None);
+    }
+
+    #[test]
+    fn cleans_escape_sequences_and_controls() {
+        assert_eq!(
+            clean("\u{1b}[36;1mbash scripts/x.sh\u{1b}[0m"),
+            "bash scripts/x.sh"
+        );
+        assert_eq!(clean("a\u{1b}]0;evil title\u{7}b"), "ab");
+        assert_eq!(
+            clean("\u{1b}]8;;https://x.test\u{1b}\\link\u{1b}]8;;\u{1b}\\"),
+            "link"
+        );
+        assert_eq!(clean("\u{1b}[2J\u{1b}[Hclear"), "clear");
+        assert_eq!(clean("tab\there\r"), "tab    here");
+        assert_eq!(clean("bell\u{7} \u{9b}31mred"), "bell red");
+        assert_eq!(clean("plain ✓ texto"), "plain ✓ texto");
+        let log = "2026-11-25T10:00:00.0Z \u{1b}[31merror\u{1b}[0m";
+        assert_eq!(whole_job(log), vec!["error"]);
     }
 
     #[test]
