@@ -67,6 +67,8 @@ struct App {
     /// Runs opened with `A` before their jobs were fetched: their steps open
     /// when the jobs arrive.
     open_steps_when_loaded: HashSet<u64>,
+    /// Top-level group or repo the tree is narrowed to (`f`), with its name.
+    focus: Option<(RowKey, String)>,
 }
 
 struct LogTarget {
@@ -141,11 +143,22 @@ impl App {
             .and_then(|i| self.rows.get(i))
             .map(|r| r.key.clone());
         let search = filter::search_text(&self.filter_text);
+        if let (Some(s), Some((key, _))) = (self.snapshot.as_ref(), &self.focus) {
+            // The focused group or repo left the config: back to the full view.
+            if tree::subtree(tree::build(s, &self.folds), key).is_empty() {
+                self.focus = None;
+            }
+        }
+        let focus = self.focus.as_ref().map(|(key, _)| key);
+        let build = |s: &Snapshot, folds: &Folds| match focus {
+            Some(key) => tree::subtree(tree::build(s, folds), key),
+            None => tree::build(s, folds),
+        };
         self.rows = match (self.snapshot.as_ref(), &search) {
             (None, _) => Vec::new(),
-            (Some(s), None) => tree::build(s, &self.folds),
+            (Some(s), None) => build(s, &self.folds),
             (Some(s), Some(query)) => {
-                let rows = tree::search(tree::build(s, &tree::search_folds(s, &self.folds)), query);
+                let rows = tree::search(build(s, &tree::search_folds(s, &self.folds)), query);
                 if rows.is_empty() {
                     vec![tree::note(
                         "",
@@ -457,6 +470,30 @@ impl App {
         None
     }
 
+    /// `f`: narrows the tree to the top-level group or repo of the selected
+    /// row, or goes back to the full view.
+    fn toggle_focus(&mut self) {
+        if self.focus.take().is_some() {
+            self.message = Some("full view".into());
+        } else {
+            let Some(i) = self.list.selected() else {
+                return;
+            };
+            let Some(top) = self.rows[..=i.min(self.rows.len().saturating_sub(1))]
+                .iter()
+                .rev()
+                .find(|r| r.depth == 0)
+            else {
+                return;
+            };
+            if !matches!(top.key, RowKey::Group(_) | RowKey::Repo(_)) {
+                return;
+            }
+            self.focus = Some((top.key.clone(), top.text.clone()));
+        }
+        self.rebuild();
+    }
+
     /// `a`: closes everything when anything is open, otherwise opens every
     /// group, repo and workflow (fetching the jobs of the quiet ones).
     /// Returns whether a refresh is needed.
@@ -698,6 +735,7 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         details: false,
         list_area: Rect::default(),
         open_steps_when_loaded: HashSet::new(),
+        focus: None,
     };
 
     let mut terminal = ratatui::init();
@@ -863,6 +901,8 @@ fn ui_loop(
         match key.code {
             KeyCode::Char('/') => app.filter_input = Some(app.filter_text.clone()),
             KeyCode::Esc if !app.filter_text.is_empty() => apply_filter(app, ""),
+            KeyCode::Esc if app.focus.is_some() => app.toggle_focus(),
+            KeyCode::Char('f') => app.toggle_focus(),
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1),
@@ -956,6 +996,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
             ("↑↓", "move"),
             ("⏎", "fold"),
             ("⇥", "next repo"),
+            ("f", "focus"),
             ("/", "filter"),
             ("l", "log"),
             ("d", "details"),
@@ -968,6 +1009,10 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         ],
         &look,
     );
+    if let Some((_, name)) = &app.focus {
+        spans.push(Span::styled(format!(" focus: {name} "), tag));
+        spans.push(Span::styled(" f/Esc: all ", Style::new().fg(theme.muted)));
+    }
     if !app.filter_text.is_empty() {
         spans.push(Span::styled(format!(" filter: {} ", app.filter_text), tag));
         spans.push(Span::styled(" Esc clears ", Style::new().fg(theme.muted)));
@@ -1546,6 +1591,7 @@ mod tests {
             details: false,
             list_area: Rect::default(),
             open_steps_when_loaded: HashSet::new(),
+            focus: None,
         };
         app.rebuild();
         app.list.select(Some(3));
@@ -1684,6 +1730,47 @@ mod tests {
         app.open_loaded_steps();
         assert!(app.folds.open_steps.contains(&(6, 0, 1)));
         assert!(!app.open_steps_when_loaded.contains(&6));
+    }
+
+    #[test]
+    fn f_focuses_the_top_level_row_and_back() {
+        let mut app = demo_app("noite");
+        let all = app.rows.len();
+        // From a step deep inside brabo-api, f focuses the whole brabo group.
+        select_key(&mut app, RowKey::Job(3, 0));
+        app.toggle_focus();
+        assert_eq!(
+            app.focus.as_ref().map(|f| &f.0),
+            Some(&RowKey::Group("brabo".into()))
+        );
+        assert_eq!(app.rows[0].key, RowKey::Group("brabo".into()));
+        assert_eq!(app.rows.iter().filter(|r| r.depth == 0).count(), 1);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| r.key == RowKey::Repo("o/hud".into()))
+        );
+        assert!(matches!(
+            app.selected().map(|r| &r.key),
+            Some(RowKey::Job(3, 0))
+        ));
+
+        // Search works inside the focus: hud's CI is outside it.
+        app.filter_text = "ci".into();
+        app.rebuild();
+        assert!(app.rows.iter().any(|r| r.key == RowKey::Workflow(3)));
+        assert!(!app.rows.iter().any(|r| r.key == RowKey::Workflow(9)));
+        app.filter_text.clear();
+
+        app.toggle_focus();
+        assert!(app.focus.is_none());
+        assert_eq!(app.rows.len(), all);
+
+        // A repo outside any group focuses alone.
+        select_key(&mut app, RowKey::Repo("o/hud".into()));
+        app.toggle_focus();
+        assert_eq!(app.rows[0].key, RowKey::Repo("o/hud".into()));
+        assert!(app.rows.iter().skip(1).all(|r| r.depth > 0));
     }
 
     #[test]
