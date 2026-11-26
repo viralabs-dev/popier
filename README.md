@@ -99,7 +99,8 @@ on. For a permanent per-repo branch filter, use `branch` in the config.
 `l` on a step opens a panel with the last 200 lines of that step; `w` switches
 to the whole job log, `Esc` closes. GitHub serves logs per job only, so popier
 downloads the job log once (kept in memory for the session) and cuts the step
-by its start and end times. If the step can't be found, the end of the job log
+at its `##[group]Run …` marker, up to the next step's marker (falling back to
+the step's start and end times when it has none). If the step can't be found, the end of the job log
 is shown with a note. The download follows GitHub's redirect to a signed
 storage URL without sending your token there.
 
