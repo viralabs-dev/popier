@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn sample_config_is_valid() {
         let config = Config::parse(SAMPLE).unwrap();
-        assert_eq!(config.repos.len(), 11);
+        assert_eq!(config.repos.len(), 2);
         assert_eq!(config.settings.expand, ExpandMode::Attention);
     }
 

@@ -33,4 +33,3 @@ config.toml ─▶ Config ─▶ snapshot::take ─▶ Snapshot ─▶ tree::bui
 
 ## Not yet decided / next steps
 
-- Whether the project becomes public (license, packaging).
