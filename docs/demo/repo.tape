@@ -11,35 +11,59 @@ Sleep 5s
 Show
 
 Sleep 2s
-Enter
-Sleep 1.5s
-Down
+# Filter runs by branch: only what ran on main stays.
+Type "/"
+Sleep 400ms
+Type "main"
 Sleep 500ms
 Enter
 Sleep 2s
-Down
-Sleep 500ms
+# Shift+Tab from the top wraps to the last repo (popier itself: calm, stable runs).
+Shift+Tab
+Sleep 1.2s
+# Fold and unfold the repo.
 Enter
-Sleep 1.5s
-Down
-Sleep 500ms
+Sleep 900ms
+Enter
+Sleep 1.2s
+# Unfold a workflow: its jobs and their steps.
 Down
 Sleep 500ms
 Enter
 Sleep 2.5s
-Type "l"
-Sleep 3s
-Escape
-Sleep 800ms
-Type "/"
+# Down to the job, then to its "Test" step (step 7), and open its log inline.
+Down
 Sleep 400ms
-Type "main"
-Sleep 1.5s
-Escape
-Sleep 1s
-Tab
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
 Sleep 800ms
-Tab
+Enter
+Sleep 2s
+# Log lines are rows: a page down and back up scrolls the inline log into view.
+PageDown
+Sleep 300ms
+PageUp
+Sleep 2.5s
+# The full log panel.
+Type "l"
+Sleep 2.5s
+Type "G"
+Sleep 1s
+Type "l"
+Sleep 800ms
+# Esc clears the filter.
+Escape
 Sleep 1.5s
 Hide
 Type "q"

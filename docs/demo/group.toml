@@ -1,0 +1,80 @@
+# Demo config: public viralabs-dev repositories with active workflows only.
+[settings]
+refresh_secs = 30
+expand = "attention"
+runs_per_repo = 30
+notify = false
+theme = "noite"
+bar = "line"
+
+[[group]]
+name = "brabo"
+repos = [
+    "viralabs-dev/brabo",
+    "viralabs-dev/brabo-api",
+    "viralabs-dev/brabo-broker",
+    "viralabs-dev/brabo-ci",
+    "viralabs-dev/brabo-contracts",
+    "viralabs-dev/brabo-engine",
+    "viralabs-dev/brabo-infra",
+    "viralabs-dev/brabo-qa",
+    "viralabs-dev/brabo-runner",
+    "viralabs-dev/brabo-web",
+    "viralabs-dev/brabo-workspace",
+]
+
+[[repo]]
+slug = "viralabs-dev/brabo"
+label = "brabo"
+
+[[repo]]
+slug = "viralabs-dev/brabo-api"
+label = "brabo-api"
+
+[[repo]]
+slug = "viralabs-dev/brabo-broker"
+label = "brabo-broker"
+
+[[repo]]
+slug = "viralabs-dev/brabo-ci"
+label = "brabo-ci"
+
+[[repo]]
+slug = "viralabs-dev/brabo-contracts"
+label = "brabo-contracts"
+
+[[repo]]
+slug = "viralabs-dev/brabo-engine"
+label = "brabo-engine"
+
+[[repo]]
+slug = "viralabs-dev/brabo-infra"
+label = "brabo-infra"
+
+[[repo]]
+slug = "viralabs-dev/brabo-qa"
+label = "brabo-qa"
+
+[[repo]]
+slug = "viralabs-dev/brabo-runner"
+label = "brabo-runner"
+
+[[repo]]
+slug = "viralabs-dev/brabo-web"
+label = "brabo-web"
+
+[[repo]]
+slug = "viralabs-dev/brabo-workspace"
+label = "brabo-workspace"
+
+[[repo]]
+slug = "viralabs-dev/hud"
+label = "hud"
+
+[[repo]]
+slug = "viralabs-dev/mudarro"
+label = "mudarro"
+
+[[repo]]
+slug = "viralabs-dev/popier"
+label = "popier"

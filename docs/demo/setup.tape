@@ -7,7 +7,8 @@ Output docs/assets/demo-setup.webm
 Source docs/demo/common.tape
 
 Hide
-Type "export POPIER_DEMO=$(mktemp -d) && cd $POPIER_DEMO && clear" Enter
+# COLORTERM: ttyd does not set it, and without it popier falls back to the 16-color theme.
+Type "export COLORTERM=truecolor POPIER_DEMO=$(mktemp -d) && cd $POPIER_DEMO && clear" Enter
 Sleep 300ms
 Show
 
@@ -15,19 +16,25 @@ Type "popier init --discover --owner viralabs-dev --public -c popier.toml"
 Sleep 600ms
 Enter
 Sleep 4s
-Type "sed -i 's/^notify = true/notify = false/' popier.toml && head -n 24 popier.toml"
+Hide
+# Off camera: no desktop notifications while recording; the printf erases this command's line.
+Type "sed -i 's/^notify = true/notify = false/' popier.toml; printf '\e[1A\e[2K'" Enter
+Sleep 200ms
+Show
+Type "sed -n '/^\[\[group/,/^]/p' popier.toml"
 Sleep 400ms
 Enter
-Sleep 4s
+Sleep 3.5s
 Type "popier -c popier.toml"
 Sleep 400ms
 Enter
 Sleep 5s
-Down
-Sleep 700ms
+# Fold the project into one row: health bar and reasons.
+Enter
+Sleep 2.5s
 Down
 Sleep 700ms
 Down
 Sleep 1.5s
+Hide
 Type "q"
-Sleep 500ms
