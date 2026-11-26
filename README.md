@@ -43,9 +43,8 @@ project spread over many repositories. popier keeps all of it in one live view.
 ## Quick start
 
 ```sh
-# 1. get the static Linux binary
-curl -sSL https://github.com/viralabs-dev/popier/releases/latest/download/popier-x86_64-unknown-linux-musl.tar.gz | tar xz
-install -m 755 popier ~/.local/bin/
+# 1. install the static Linux binary into ~/.local/bin
+curl -fsSL https://viralabs-dev.github.io/popier/install.sh | sh
 
 # 2. let it find your repos (uses your `gh` login)
 popier init --discover
@@ -69,7 +68,18 @@ popier
 
 ## Install
 
-**Prebuilt binary (Linux x86_64):** download `popier-x86_64-unknown-linux-musl.tar.gz`
+**One command (Linux x86_64):**
+
+```sh
+curl -fsSL https://viralabs-dev.github.io/popier/install.sh | sh
+```
+
+It downloads the static binary from the latest release, checks its SHA-256 and
+installs it into `~/.local/bin` (set `POPIER_INSTALL_DIR` for another folder,
+`POPIER_VERSION=v0.1.0` for a given release). The script is
+[`docs/install.sh`](docs/install.sh), if you'd rather read it first.
+
+**Prebuilt binary by hand:** download `popier-x86_64-unknown-linux-musl.tar.gz`
 (static, any distro) or `popier-x86_64-unknown-linux-gnu.tar.gz` from the
 [latest release](https://github.com/viralabs-dev/popier/releases/latest):
 
