@@ -4,14 +4,14 @@ Watch the GitHub Actions pipelines of many repositories on one screen, with
 every **workflow → job → step** laid out as a tree.
 
 ```
-▾ viralabs-dev/brabo-api
+▾ acme/api
   ▾ ✗ CI (main)
         ✗ test
             ✓ 1. Set up job
             ✓ 2. Checkout
             ✗ 3. Run tests
   ▸ ✓ Release (main)
-▾ viralabs-dev/brabo-web
+▾ acme/web
   ▾ ● Deploy (main)
         ● deploy
             ✓ 1. Set up job
@@ -23,11 +23,22 @@ every **workflow → job → step** laid out as a tree.
 
 ## Install
 
-Requires a Rust toolchain (`rustup`).
+**Prebuilt binary (Linux x86_64):** download `popier-x86_64-unknown-linux-musl.tar.gz`
+(static, any distro) or `popier-x86_64-unknown-linux-gnu.tar.gz` from the
+[latest release](https://github.com/viralabs-dev/popier/releases/latest):
 
 ```sh
-cargo install --path .
+curl -sSL https://github.com/viralabs-dev/popier/releases/latest/download/popier-x86_64-unknown-linux-musl.tar.gz | tar xz
+install -m 755 popier ~/.local/bin/
 ```
+
+**From source** (Rust 1.85+):
+
+```sh
+cargo install --git https://github.com/viralabs-dev/popier
+```
+
+Notifications use `notify-send` (libnotify), available on most Linux desktops.
 
 ## Setup
 
@@ -47,11 +58,11 @@ notify = true            # desktop notification when a workflow fails / recovers
 notify_branches = []     # only notify for these branches (empty = all)
 
 [[repo]]
-slug = "viralabs-dev/brabo"
+slug = "your-org/your-repo"
 
 [[repo]]
-slug = "viralabs-dev/brabo-api"
-label = "api"            # optional display name
+slug = "your-org/another-repo"
+label = "another"        # optional display name
 branch = "main"          # optional branch filter
 ```
 
@@ -154,3 +165,14 @@ cargo fmt
 ```
 
 Architecture notes live in [`docs/architecture.md`](docs/architecture.md).
+
+## Releasing
+
+Push a tag `vX.Y.Z` matching the version in `Cargo.toml`; the release workflow
+builds the Linux binaries (glibc and static musl) and attaches them to a GitHub release.
+
+## License
+
+Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT), at your option. Contributions are accepted under
+the same terms.

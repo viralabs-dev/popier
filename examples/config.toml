@@ -27,34 +27,9 @@ bar = "line"
 # Optional keys: label = "short name", branch = "main"
 
 [[repo]]
-slug = "viralabs-dev/brabo"
+slug = "your-org/your-repo"
 
 [[repo]]
-slug = "viralabs-dev/brabo-api"
-
-[[repo]]
-slug = "viralabs-dev/brabo-engine"
-
-[[repo]]
-slug = "viralabs-dev/brabo-web"
-
-[[repo]]
-slug = "viralabs-dev/brabo-broker"
-
-[[repo]]
-slug = "viralabs-dev/brabo-contracts"
-
-[[repo]]
-slug = "viralabs-dev/brabo-runner"
-
-[[repo]]
-slug = "viralabs-dev/brabo-qa"
-
-[[repo]]
-slug = "viralabs-dev/brabo-ci"
-
-[[repo]]
-slug = "viralabs-dev/brabo-infra"
-
-[[repo]]
-slug = "viralabs-dev/brabo-workspace"
+slug = "your-org/another-repo"
+label = "another"
+branch = "main"
