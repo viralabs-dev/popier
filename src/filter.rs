@@ -1,37 +1,36 @@
-//! Run filter typed in the dashboard (`/`): part of a branch name, or `#123` for a PR.
+//! Filter typed in the dashboard (`/`).
+//!
+//! `#123` keeps only runs of pull request 123 (applied when runs are fetched).
+//! Any other text is a search over the tree: only the rows whose name or
+//! branch contains it stay, with their parents (see [`crate::tree::search`]).
 
 use crate::github::RunDto;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunFilter {
-    /// Case-insensitive substring of the head branch.
-    Branch(String),
     /// Pull request number (`#152`).
     PullRequest(u64),
 }
 
 impl RunFilter {
-    /// Parses the text typed by the user. Blank text means no filter.
+    /// The run filter in the typed text: `#152`, or `None` for anything else.
     pub fn parse(text: &str) -> Option<Self> {
-        let text = text.trim();
-        if text.is_empty() {
-            return None;
-        }
-        if let Some(number) = text.strip_prefix('#').and_then(|n| n.parse().ok()) {
-            return Some(Self::PullRequest(number));
-        }
-        Some(Self::Branch(text.to_lowercase()))
+        let number = text.trim().strip_prefix('#')?.parse().ok()?;
+        Some(Self::PullRequest(number))
     }
 
     pub fn matches(&self, run: &RunDto) -> bool {
         match self {
-            Self::Branch(part) => run
-                .head_branch
-                .as_deref()
-                .is_some_and(|b| b.to_lowercase().contains(part)),
             Self::PullRequest(number) => run.pull_requests.iter().any(|pr| pr.number == *number),
         }
     }
+}
+
+/// The tree search in the typed text, lowercased: `None` when the text is
+/// blank or is a `#PR` filter.
+pub fn search_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty() && RunFilter::parse(text).is_none()).then(|| text.to_lowercase())
 }
 
 #[cfg(test)]
@@ -61,22 +60,12 @@ mod tests {
     fn parses_input() {
         assert_eq!(RunFilter::parse("  "), None);
         assert_eq!(RunFilter::parse("#152"), Some(RunFilter::PullRequest(152)));
-        assert_eq!(
-            RunFilter::parse("Docs/"),
-            Some(RunFilter::Branch("docs/".into()))
-        );
-        // "#" followed by text is a branch search, not a PR.
-        assert_eq!(
-            RunFilter::parse("#abc"),
-            Some(RunFilter::Branch("#abc".into()))
-        );
-    }
-
-    #[test]
-    fn matches_branch_part_case_insensitive() {
-        let f = RunFilter::parse("REFS").unwrap();
-        assert!(f.matches(&run("docs/refs-e-ancoras", &[])));
-        assert!(!f.matches(&run("main", &[])));
+        assert_eq!(RunFilter::parse("Docs/"), None);
+        assert_eq!(search_text("  "), None);
+        assert_eq!(search_text("#152"), None);
+        assert_eq!(search_text(" Docs/ ").as_deref(), Some("docs/"));
+        // "#" followed by text is a search, not a PR.
+        assert_eq!(search_text("#abc").as_deref(), Some("#abc"));
     }
 
     #[test]

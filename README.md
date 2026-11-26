@@ -176,7 +176,7 @@ popier -c other.toml # use another config file
 | `↑` `↓` / `j` `k` | move |
 | `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs); on a step, show the end of its log right below it |
 | `Tab` / `Shift+Tab` | next / previous project or repo (wraps around: after the last comes the first) |
-| `/` | filter by part of a branch name, or `#152` for a PR (applies as you type; `Esc` clears) |
+| `/` | search: the tree shows only what matches as you type (names and branches), or `#152` for a PR; `Esc` clears |
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
 | `a` | toggle expanding every workflow |
 | `r` | refresh now |
@@ -235,11 +235,14 @@ progress bar.
 
 ## Filtering
 
-`/` opens a filter field in the footer. Text matches part of the head branch
-(case-insensitive); `#152` matches runs of pull request 152. The filter applies
-to the recent runs already scanned per repo (`runs_per_repo`), so a branch with
-no run among them shows as "(no runs)". Notifications pause while a filter is
-on. For a permanent per-repo branch filter, use `branch` in the config.
+`/` opens a filter field in the footer, and the tree narrows as you type: only
+the groups, repos, workflows, jobs and steps whose name or branch contains the
+text stay (case-insensitive), each with the rows above it, and everything under
+a matching row stays too. Folded groups and repos open while you search.
+`#152` instead keeps only runs of pull request 152, among the recent runs
+already scanned per repo (`runs_per_repo`); notifications pause while it is on.
+`Enter` keeps the filter and returns to the tree, `Esc` clears it. For a
+permanent per-repo branch filter, use `branch` in the config.
 
 ## Step logs
 
