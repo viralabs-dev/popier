@@ -51,9 +51,13 @@ jobs:
       - name: Package as the release does
         shell: bash
         run: |
-          target/release/popier.exe --help | grep -q -- '--update'
+          # No `| grep -q`: under pipefail its early exit kills the writer (SIGPIPE, 141).
+          help=$(target/release/popier.exe --help)
+          grep -q -- '--update' <<<"$help"
           mkdir dist && cp target/release/popier.exe README.md dist/
-          tar -czf popier-test.tar.gz -C dist . && tar -tzf popier-test.tar.gz | grep -q 'popier.exe'
+          tar -czf popier-test.tar.gz -C dist .
+          listing=$(tar -tzf popier-test.tar.gz)
+          grep -q 'popier.exe' <<<"$listing"
       - name: Install script parses
         shell: pwsh
         run: |

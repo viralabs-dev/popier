@@ -36,7 +36,11 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Check the binary can update itself
         # Installed copies get new releases through --update; never ship one without it.
-        run: target/${{ matrix.target }}/release/${{ matrix.bin }} --help | grep -q -- '--update'
+        # Not `| grep -q`: `shell: bash` sets pipefail, and grep's early exit
+        # would fail the step with SIGPIPE.
+        run: |
+          help=$(target/${{ matrix.target }}/release/${{ matrix.bin }} --help)
+          grep -q -- '--update' <<<"$help"
       - name: Package
         run: |
           mkdir dist
