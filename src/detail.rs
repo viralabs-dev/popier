@@ -550,9 +550,48 @@ pub fn panel_width(width: u16) -> Option<u16> {
     (width >= 90).then(|| (width * 2 / 5).clamp(38, 64))
 }
 
+/// A terminal taller than it is wide on screen (a cell is about twice as
+/// tall as it is wide), as on a monitor turned upright.
+pub fn portrait(width: u16, height: u16) -> bool {
+    height >= 30 && u32::from(height) * 2 >= u32::from(width)
+}
+
+/// Where the details panel goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// To the right of the tree, this many columns wide.
+    Right(u16),
+    /// Under the tree, full width, this many rows tall.
+    Below(u16),
+    /// Over the tree.
+    Cover,
+}
+
+/// Right on a wide terminal, below on a portrait one, over the tree when
+/// there is room for neither.
+pub fn placement(width: u16, height: u16) -> Placement {
+    if portrait(width, height) {
+        return Placement::Below((height * 2 / 5).clamp(14, 30));
+    }
+    panel_width(width).map_or(Placement::Cover, Placement::Right)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upright_terminals_put_the_panel_below() {
+        assert!(portrait(90, 56));
+        assert!(portrait(72, 50));
+        assert!(!portrait(140, 26));
+        assert!(!portrait(120, 40));
+        assert!(!portrait(50, 20), "too short to split");
+        assert_eq!(placement(90, 56), Placement::Below(22));
+        assert_eq!(placement(100, 80), Placement::Below(30));
+        assert_eq!(placement(140, 26), Placement::Right(56));
+        assert_eq!(placement(80, 24), Placement::Cover);
+    }
 
     #[test]
     fn panel_takes_two_fifths_within_bounds() {

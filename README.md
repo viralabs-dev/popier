@@ -214,6 +214,14 @@ selected row, and it follows the selection as you move:
 On terminals narrower than 90 columns the panel covers the tree; `d`, `←` or
 `Esc`-free navigation keep working, and `d` closes it.
 
+### Upright monitors
+
+On a tall, narrow terminal (at least 30 rows, and twice as many rows as
+columns, as on a monitor turned on its side) the panel goes under the tree,
+full width, instead of to its right. The key hints wrap onto a second line
+instead of being cut, and between 64 and 80 columns the tree keeps a short
+progress bar.
+
 ## Filtering
 
 `/` opens a filter field in the footer. Text matches part of the head branch
