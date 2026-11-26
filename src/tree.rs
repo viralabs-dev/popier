@@ -80,7 +80,7 @@ pub fn build(snapshot: &Snapshot, folds: &Folds) -> Vec<Row> {
                 depth: 1,
                 status: Some(wf.status),
                 text: wf.name.clone(),
-                detail: Some(format!("({})", wf.branch.as_deref().unwrap_or("-"))),
+                detail: branch_detail(&wf.name, wf.branch.as_deref()),
                 is_error: false,
                 url: Some(wf.url.clone()),
                 foldable: true,
@@ -140,6 +140,33 @@ fn note(slug: &str, idx: usize, text: String, is_error: bool) -> Row {
         foldable: false,
         expanded: false,
     }
+}
+
+/// Longest branch name shown in full; longer ones are cut in the middle.
+const MAX_BRANCH: usize = 40;
+
+/// `(branch)` suffix for a workflow row, skipped when the label already ends with it.
+fn branch_detail(label: &str, branch: Option<&str>) -> Option<String> {
+    let branch = branch.unwrap_or("-");
+    if label.ends_with(&format!("({branch})")) {
+        return None;
+    }
+    Some(format!("({})", shorten_middle(branch, MAX_BRANCH)))
+}
+
+/// Cuts `s` to at most `max` characters, keeping its start and end around `…`.
+fn shorten_middle(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_owned();
+    }
+    let keep = max - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - tail..]);
+    out
 }
 
 fn first_line(s: &str) -> &str {
@@ -248,6 +275,23 @@ mod tests {
         folds.collapsed_repos.insert("o/web".into());
         let rows = build(&sample(), &folds);
         assert_eq!(rows.len(), 4); // api, CI, Lint, web
+    }
+
+    #[test]
+    fn shortens_long_branches() {
+        let long = "dependabot/github_actions/dev/viralabs-dev/brabo-ci/workflows/x.yml-1.5.1";
+        let short = shorten_middle(long, 40);
+        assert_eq!(short.chars().count(), 40);
+        assert!(short.starts_with("dependabot/github_a"));
+        assert!(short.ends_with("x.yml-1.5.1"));
+        assert_eq!(shorten_middle("main", 40), "main");
+    }
+
+    #[test]
+    fn skips_branch_already_in_label() {
+        assert_eq!(branch_detail("refs ← #152 (docs/x)", Some("docs/x")), None);
+        assert_eq!(branch_detail("CI", Some("main")).as_deref(), Some("(main)"));
+        assert_eq!(branch_detail("CI", None).as_deref(), Some("(-)"));
     }
 
     #[test]

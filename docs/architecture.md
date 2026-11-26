@@ -10,7 +10,7 @@ config.toml ─▶ Config ─▶ snapshot::take ─▶ Snapshot ─▶ tree::bui
 | Module | Responsibility |
 |---|---|
 | `config` | Parse and validate `config.toml`. |
-| `github` | Thin REST client for `actions/runs` and `runs/{id}/jobs`; ETag cache; token discovery. |
+| `github` | Thin REST client for `actions/runs`, `actions/workflows` and `runs/{id}/jobs`; ETag cache; token discovery. |
 | `status` | Maps GitHub `status` + `conclusion` to one `Status` with icon and color. |
 | `snapshot` | Fetches every repo concurrently, keeps the latest run per workflow, fetches jobs/steps for expanded workflows. |
 | `tree` | Flattens a snapshot into display rows, honouring user folds. Shared by both front ends. |
