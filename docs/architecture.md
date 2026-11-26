@@ -17,6 +17,7 @@ config.toml ─▶ Config ─▶ snapshot::take ─▶ Snapshot ─▶ tree::bui
 | `filter` | Parses the `/` filter: `#PR` matches runs before the latest run per workflow is picked; other text is a tree search (`tree::search`). |
 | `logs` | Cuts a step out of a job log by timestamps; strips timestamps; tails. |
 | `notify` | Compares consecutive snapshots and sends `notify-send` when a workflow starts failing or recovers. |
+| `update` | `popier --update`: downloads the latest release archive, checks its SHA-256 and renames the new binary over the running one. |
 | `tui` | Event loop. A background task produces snapshots on a timer or on demand; the UI thread only draws and handles keys. |
 
 ## Decisions

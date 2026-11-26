@@ -15,6 +15,7 @@ mod status;
 mod theme;
 mod tree;
 mod tui;
+mod update;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -31,6 +32,10 @@ struct Cli {
     /// Config file (default: ~/.config/popier/config.toml).
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
+
+    /// Update popier to the latest release (checks its SHA-256 first).
+    #[arg(long, exclusive = true)]
+    update: bool,
 
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -82,6 +87,9 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.update {
+        return update::run().await;
+    }
     let path = match cli.config {
         Some(p) => p,
         None => Config::default_path().context("cannot determine the config directory")?,
