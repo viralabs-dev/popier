@@ -231,6 +231,7 @@ mod tests {
                             status: Status::Failure,
                             url: String::new(),
                             jobs: Some(Ok(vec![JobView {
+                                id: 100,
                                 name: "test".into(),
                                 status: Status::Failure,
                                 url: None,
@@ -238,6 +239,8 @@ mod tests {
                                     number: 1,
                                     name: "Run tests".into(),
                                     status: Status::Failure,
+                                    started_at: None,
+                                    completed_at: None,
                                 }],
                             }])),
                         },

@@ -80,6 +80,7 @@ popier -c other.toml # use another config file
 | `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs) |
 | `Tab` / `Shift+Tab` | next / previous repo |
 | `/` | filter by part of a branch name, or `#152` for a PR (applies as you type; `Esc` clears) |
+| `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
 | `a` | toggle expanding every workflow |
 | `r` | refresh now |
 | `o` | open the selected item in the browser |
@@ -92,6 +93,15 @@ popier -c other.toml # use another config file
 to the recent runs already scanned per repo (`runs_per_repo`), so a branch with
 no run among them shows as "(no runs)". Notifications pause while a filter is
 on. For a permanent per-repo branch filter, use `branch` in the config.
+
+## Step logs
+
+`l` on a step opens a panel with the last 200 lines of that step; `w` switches
+to the whole job log, `Esc` closes. GitHub serves logs per job only, so popier
+downloads the job log once (kept in memory for the session) and cuts the step
+by its start and end times. If the step can't be found, the end of the job log
+is shown with a note. The download follows GitHub's redirect to a signed
+storage URL without sending your token there.
 
 ## Notifications
 
