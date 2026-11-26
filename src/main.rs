@@ -4,6 +4,7 @@
 mod config;
 mod detail;
 mod discover;
+mod failures;
 mod filter;
 mod github;
 mod logs;
@@ -47,6 +48,12 @@ enum Cmd {
         /// Disable ANSI colors.
         #[arg(long)]
         no_color: bool,
+        /// After the tree, print the end of the log of every failing step.
+        #[arg(long)]
+        logs: bool,
+        /// With --logs: how many lines per failing step.
+        #[arg(long, value_name = "N", default_value_t = failures::DEFAULT_LINES, requires = "logs")]
+        log_lines: usize,
     },
     /// Write a config file: a sample, or your own repos with --discover.
     Init {
@@ -101,7 +108,12 @@ async fn main() -> Result<()> {
                 write_config(&path, &text)
             }
         }
-        Cmd::Once { all, no_color } => {
+        Cmd::Once {
+            all,
+            no_color,
+            logs,
+            log_lines,
+        } => {
             let config = Config::load(&path)?;
             let client = github::Client::new(github::resolve_token()?)?;
             let mut expand = ExpandRequest::from_mode(config.settings.expand);
@@ -112,6 +124,13 @@ async fn main() -> Result<()> {
                 "{}",
                 tree::render_plain(&tree::build(&snap, &tree::Folds::default()), color)
             );
+            if logs {
+                let found = failures::collect(&snap);
+                print!(
+                    "{}",
+                    failures::render(&client, &found, log_lines, color).await
+                );
+            }
             Ok(())
         }
         Cmd::Tui => {
