@@ -99,21 +99,57 @@ impl Watcher {
     }
 }
 
-/// Sends `event` through `notify-send`. Failures are ignored on purpose:
+/// Sends `event` as a desktop notification: `notify-send` on Linux, a toast
+/// through Windows PowerShell on Windows. Failures are ignored on purpose:
 /// a missing notification daemon must never break the dashboard.
 pub fn send(event: &Event) {
-    let (urgency, icon, verb) = match event.change {
-        Change::Failed => ("critical", "dialog-error", "failed"),
-        Change::Recovered => ("low", "emblem-ok", "passing again"),
+    let verb = match event.change {
+        Change::Failed => "failed",
+        Change::Recovered => "passing again",
     };
     let title = format!("popier: {} › {} {verb}", event.repo, event.workflow);
     let body = event.branch.as_deref().unwrap_or("-");
-    let _ = Command::new("notify-send")
-        .args(["--app-name=popier", "-u", urgency, "-i", icon, &title, body])
+    let _ = command(event.change, &title, body)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+#[cfg(not(windows))]
+fn command(change: Change, title: &str, body: &str) -> Command {
+    let (urgency, icon) = match change {
+        Change::Failed => ("critical", "dialog-error"),
+        Change::Recovered => ("low", "emblem-ok"),
+    };
+    let mut cmd = Command::new("notify-send");
+    cmd.args(["--app-name=popier", "-u", urgency, "-i", icon, title, body]);
+    cmd
+}
+
+/// Shows a toast through the WinRT API, which only Windows PowerShell 5.1
+/// (`powershell.exe`, present on every Windows) can load; `pwsh` cannot.
+/// Title and body travel in environment variables and are XML-escaped by the
+/// script, so repo or branch names can't inject PowerShell or toast markup.
+/// The script has no double quotes: Windows PowerShell 5.1 drops escaped
+/// ones from its command line. The app id is PowerShell's own, so no
+/// registration is needed.
+#[cfg(windows)]
+fn command(_change: Change, title: &str, body: &str) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const SCRIPT: &str = "\
+$m = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime];\
+$x = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::new();\
+$e = [Security.SecurityElement];\
+$x.LoadXml('<toast><visual><binding template=''ToastGeneric''><text>' + $e::Escape($env:POPIER_TITLE) + '</text><text>' + $e::Escape($env:POPIER_BODY) + '</text></binding></visual></toast>');\
+$m::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x))";
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+        .env("POPIER_TITLE", title)
+        .env("POPIER_BODY", body)
+        .creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 #[cfg(test)]
