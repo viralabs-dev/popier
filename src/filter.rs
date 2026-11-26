@@ -48,6 +48,8 @@ mod tests {
             status: None,
             conclusion: None,
             html_url: String::new(),
+            run_started_at: None,
+            updated_at: None,
             pull_requests: prs
                 .iter()
                 .map(|&number| PullRequestRef { number })

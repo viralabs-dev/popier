@@ -135,6 +135,8 @@ mod tests {
                         branch: Some(branch.into()),
                         status,
                         url: String::new(),
+                        started_at: None,
+                        updated_at: None,
                         jobs: None,
                     })
                     .collect()),

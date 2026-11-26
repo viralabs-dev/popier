@@ -1,7 +1,5 @@
 //! Unified status for runs, jobs and steps.
 
-use ratatui::style::Color;
-
 /// Status derived from GitHub's `status` + `conclusion` pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -37,15 +35,6 @@ impl Status {
             Self::Failure => "✗",
             Self::Skipped => "–",
             Self::Cancelled => "⊘",
-        }
-    }
-
-    pub fn color(self) -> Color {
-        match self {
-            Self::Running => Color::Yellow,
-            Self::Success => Color::Green,
-            Self::Failure => Color::Red,
-            Self::Queued | Self::Skipped | Self::Cancelled => Color::DarkGray,
         }
     }
 

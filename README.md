@@ -94,8 +94,32 @@ popier -c other.toml # use another config file
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
 | `a` | toggle expanding every workflow |
 | `r` | refresh now |
+| `t` | next color theme (noite → brasa → papel → alto-contraste → terminal) |
 | `o` | open the selected item in the browser |
 | `q` / `Esc` | quit (`Esc` clears an active filter first) |
+
+## Look and themes
+
+Each workflow and job shows a progress bar (finished steps out of all steps),
+the percent, the `done/total` count and how long it has run. A repo line, open
+or folded, sums up its most urgent pipeline (failed, then running, then
+queued), so a folded repo still tells you what is going on. The header counts
+repos per state and shows a strip with one `▮` per repo plus a mini bar for
+each pipeline running now.
+
+```toml
+[settings]
+theme = "noite"   # noite, brasa, papel (light), alto-contraste, terminal
+bar = "line"      # "line" ━━━━╸──── or "block" ████▌░░░░
+```
+
+Without `theme`, popier uses `noite` on true-color terminals and `terminal`
+(your terminal's own 16 colors) elsewhere. A custom theme is a file
+`~/.config/popier/themes/<name>.toml` with any of the design tokens, e.g.
+`running = "#62b6ff"`; tokens left out come from `noite`. Token names: `bg`,
+`surface`, `surface-raised`, `selection`, `line`, `track`, `ink`, `muted`,
+`faint`, `accent`, `on-accent`, `running`, `queued`, `success`, `failure`,
+`skipped`, `cancelled`.
 
 ## Filtering
 
