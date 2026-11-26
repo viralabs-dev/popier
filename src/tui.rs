@@ -209,6 +209,7 @@ impl App {
                             .iter()
                             .map(|s| logs::StepSpan {
                                 number: s.number,
+                                name: s.name.clone(),
                                 started: s.started_at.clone(),
                                 completed: s.completed_at.clone(),
                                 skipped: s.status == Status::Skipped,
@@ -658,6 +659,7 @@ mod tests {
         let step = step.map(|(a, b)| {
             let span = logs::StepSpan {
                 number: 1,
+                name: "step".into(),
                 started: Some(a.to_owned()),
                 completed: Some(b.to_owned()),
                 skipped: false,
