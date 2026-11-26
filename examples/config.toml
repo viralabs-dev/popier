@@ -15,6 +15,13 @@ runs_per_repo = 30
 notify = true
 # Restrict notifications to these branches. Empty list = every branch.
 notify_branches = []
+# Color theme: "noite" (default), "brasa", "papel" (light), "alto-contraste",
+# or "terminal" (your terminal's own 16 colors, picked automatically when the
+# terminal has no true color). Press `t` in the dashboard to try them.
+# A custom theme is ~/.config/popier/themes/<name>.toml with token = "#rrggbb".
+# theme = "noite"
+# Progress bars: "line" (━━━╸───) or "block" (███▌░░░).
+bar = "line"
 
 # One [[repo]] block per repository, in display order.
 # Optional keys: label = "short name", branch = "main"

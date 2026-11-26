@@ -30,6 +30,9 @@ pub struct WorkflowView {
     pub branch: Option<String>,
     pub status: Status,
     pub url: String,
+    /// When the run started and when it last changed (RFC 3339).
+    pub started_at: Option<String>,
+    pub updated_at: Option<String>,
     /// `None` when jobs were not fetched (collapsed workflow).
     pub jobs: Option<Result<Vec<JobView>, String>>,
 }
@@ -137,6 +140,8 @@ async fn load_repo(
                     branch: run.head_branch.clone(),
                     status,
                     url: run.html_url.clone(),
+                    started_at: run.run_started_at.clone(),
+                    updated_at: run.updated_at.clone(),
                     jobs,
                 }
             });
@@ -215,6 +220,8 @@ mod tests {
             status: Some("completed".into()),
             conclusion: Some("success".into()),
             html_url: String::new(),
+            run_started_at: None,
+            updated_at: None,
             pull_requests: Vec::new(),
         }
     }

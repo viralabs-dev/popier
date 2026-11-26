@@ -31,6 +31,12 @@ pub struct RunDto {
     pub status: Option<String>,
     pub conclusion: Option<String>,
     pub html_url: String,
+    /// When the run (or its latest attempt) started.
+    #[serde(default)]
+    pub run_started_at: Option<String>,
+    /// Last change; for a finished run, roughly when it ended.
+    #[serde(default)]
+    pub updated_at: Option<String>,
     /// PRs whose head is this run's commit (empty for runs not tied to a PR).
     #[serde(default)]
     pub pull_requests: Vec<PullRequestRef>,

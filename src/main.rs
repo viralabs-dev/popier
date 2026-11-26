@@ -6,8 +6,10 @@ mod filter;
 mod github;
 mod logs;
 mod notify;
+mod paint;
 mod snapshot;
 mod status;
+mod theme;
 mod tree;
 mod tui;
 

@@ -11,7 +11,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use tokio::sync::{mpsc, watch};
@@ -21,8 +21,10 @@ use crate::filter::RunFilter;
 use crate::github::Client;
 use crate::logs;
 use crate::notify;
+use crate::paint::{self, Look};
 use crate::snapshot::{self, ExpandRequest, Snapshot};
 use crate::status::Status;
+use crate::theme::{BarStyle, Theme};
 use crate::tree::{self, Folds, Row, RowKey};
 
 struct App {
@@ -44,6 +46,10 @@ struct App {
     log_view: Option<LogView>,
     /// Downloaded job logs by job id, kept in memory for this session only.
     log_cache: HashMap<u64, Result<String, String>>,
+    theme: Theme,
+    bar: BarStyle,
+    /// Drives the spinner.
+    started: Instant,
 }
 
 struct LogTarget {
@@ -237,6 +243,7 @@ impl App {
 }
 
 pub async fn run(config: Config, client: Client) -> Result<()> {
+    let theme = Theme::resolve(config.settings.theme.as_deref())?;
     let client = Arc::new(client);
     let config = Arc::new(config);
     let refresh = Duration::from_secs(config.settings.refresh_secs);
@@ -284,6 +291,9 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         filter_text: String::new(),
         log_view: None,
         log_cache: HashMap::new(),
+        theme,
+        bar: config.settings.bar,
+        started: Instant::now(),
     };
 
     let mut terminal = ratatui::init();
@@ -357,7 +367,7 @@ fn ui_loop(
 
         terminal.draw(|frame| draw(frame, app, &client))?;
 
-        if !event::poll(Duration::from_millis(200))? {
+        if !event::poll(Duration::from_millis(100))? {
             continue;
         }
         let Event::Key(key) = event::read()? else {
@@ -451,6 +461,13 @@ fn ui_loop(
                 request_refresh(app);
             }
             KeyCode::Char('r') => request_refresh(app),
+            KeyCode::Char('t') => {
+                app.theme = app.theme.next();
+                app.message = Some(format!(
+                    "theme {} · keep it with theme = \"{}\" in config.toml",
+                    app.theme.name, app.theme.name
+                ));
+            }
             KeyCode::Char('l') => {
                 if let Some(target) = app.log_target() {
                     let mut view = target.view;
@@ -485,161 +502,180 @@ fn ui_loop(
 }
 
 fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
-    let [main, footer] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+    let theme = app.theme.clone();
+    let look = Look {
+        theme: &theme,
+        bar: app.bar,
+        tick: (app.started.elapsed().as_millis() / 100) as usize,
+    };
+    let area = frame.area();
+    frame.render_widget(
+        Block::new().style(Style::new().bg(theme.bg).fg(theme.ink)),
+        area,
+    );
+    let [head, _, main, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     if let Some(view) = app.log_view.as_mut() {
-        draw_log(frame, view, main, footer);
+        let [main, footer] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        draw_log(frame, view, &look, main, footer);
         return;
     }
 
-    let items: Vec<ListItem> = app.rows.iter().map(row_line).map(ListItem::new).collect();
-    let title = if app.loading {
-        " popier · refreshing… "
-    } else {
-        " popier "
+    let rate = client.rate_limit();
+    let info = paint::HeaderInfo {
+        loading: app.loading,
+        updated_secs: app.last_refresh.map(|at| at.elapsed().as_secs()),
+        rate: rate.remaining.zip(rate.limit),
     };
-    let list = List::new(items)
-        .block(Block::bordered().title(title.bold()))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Rgb(45, 45, 60))
-                .add_modifier(Modifier::BOLD),
-        );
+    frame.render_widget(
+        Paragraph::new(paint::header(&app.rows, &info, &look, head.width))
+            .style(Style::new().bg(theme.surface)),
+        head,
+    );
+
+    let items: Vec<ListItem> = paint::rows(&app.rows, &look, main.width)
+        .into_iter()
+        .map(ListItem::new)
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::new()
+            .bg(theme.selection)
+            .add_modifier(Modifier::BOLD),
+    );
     frame.render_stateful_widget(list, main, &mut app.list);
 
+    let bar = Style::new().bg(theme.surface_raised);
+    let tag = Style::new()
+        .fg(theme.on_accent)
+        .bg(theme.accent)
+        .add_modifier(Modifier::BOLD);
     if let Some(input) = &app.filter_input {
         let line = Line::from(vec![
-            Span::styled(" filter: ", Style::default().fg(Color::Cyan)),
-            Span::raw(input.clone()),
-            Span::styled("▏", Style::default().fg(Color::Cyan)),
+            Span::styled(" filter ", tag),
+            Span::styled(format!(" {input}"), Style::new().fg(theme.ink)),
+            Span::styled("▏", Style::new().fg(theme.accent)),
             Span::styled(
                 "   branch part or #PR · ⏎ keep · Esc clear",
-                Style::default().fg(Color::DarkGray),
+                Style::new().fg(theme.muted),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line), footer);
+        frame.render_widget(Paragraph::new(line).style(bar), footer);
         return;
     }
 
-    let mut spans = vec![Span::styled(
-        " ↑↓/jk move  ⏎ fold  Tab next repo  / filter  l log  a all  r refresh  o open  q quit ",
-        Style::default().fg(Color::DarkGray),
-    )];
+    let mut spans = paint::hints(
+        &[
+            ("↑↓", "move"),
+            ("⏎", "fold"),
+            ("⇥", "next repo"),
+            ("/", "filter"),
+            ("l", "log"),
+            ("t", "theme"),
+            ("a", "all"),
+            ("r", "refresh"),
+            ("o", "open"),
+            ("q", "quit"),
+        ],
+        &look,
+    );
     if !app.filter_text.is_empty() {
-        spans.push(Span::styled(
-            format!(" filter: {} (Esc clears) ", app.filter_text),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
-        ));
-    }
-    if let Some(at) = app.last_refresh {
-        spans.push(Span::raw(format!(
-            " updated {}s ago",
-            at.elapsed().as_secs()
-        )));
-    }
-    let rate = client.rate_limit();
-    if let (Some(rem), Some(lim)) = (rate.remaining, rate.limit) {
-        spans.push(Span::styled(
-            format!("  api {rem}/{lim}"),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled(format!(" filter: {} ", app.filter_text), tag));
+        spans.push(Span::styled(" Esc clears ", Style::new().fg(theme.muted)));
     }
     if let Some(msg) = &app.message {
-        spans.push(Span::styled(
-            format!("  {msg}"),
-            Style::default().fg(Color::Cyan),
-        ));
+        spans.push(Span::styled(format!("  {msg}"), Style::new().fg(theme.ink)));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), footer);
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), footer);
 }
 
 fn draw_log(
     frame: &mut ratatui::Frame,
     view: &mut LogView,
+    look: &Look,
     main: ratatui::layout::Rect,
     footer: ratatui::layout::Rect,
 ) {
+    let theme = look.theme;
     let height = main.height.saturating_sub(2) as usize;
     let max_scroll = view.lines.len().saturating_sub(height);
     let scroll = view.scroll.map_or(max_scroll, |s| s.min(max_scroll));
     view.scroll = view.scroll.map(|_| scroll);
 
-    let lines: Vec<Line> = view.lines.iter().map(|l| log_line(l)).collect();
+    let lines: Vec<Line> = view.lines.iter().map(|l| log_line(l, theme)).collect();
     let scope = if view.step.is_none() || view.whole {
         "job"
     } else {
         "step"
     };
-    let title = format!(" log ({scope}) · {} ", view.title);
+    let title = Line::from(vec![
+        Span::styled(
+            " ◆ ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("log ({scope}) · {} ", view.title),
+            Style::new().fg(theme.ink).add_modifier(Modifier::BOLD),
+        ),
+    ]);
     let paragraph = Paragraph::new(lines)
-        .block(Block::bordered().title(title.bold()))
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.line))
+                .title(title),
+        )
+        .style(Style::new().fg(theme.ink).bg(theme.bg))
         .scroll((scroll as u16, 0));
     frame.render_widget(paragraph, main);
 
-    let mut spans = vec![Span::styled(
-        " ↑↓/jk scroll  PgUp/PgDn page  g/G top/bottom  w step/job  Esc close ",
-        Style::default().fg(Color::DarkGray),
-    )];
-    spans.push(Span::raw(format!(
-        " {}/{} lines",
-        (scroll + height).min(view.lines.len()),
-        view.lines.len()
-    )));
+    let mut spans = paint::hints(
+        &[
+            ("↑↓", "scroll"),
+            ("PgUp/PgDn", "page"),
+            ("g/G", "top/bottom"),
+            ("w", "step/job"),
+            ("Esc", "close"),
+        ],
+        look,
+    );
+    spans.push(Span::styled(
+        format!(
+            "{}/{} lines",
+            (scroll + height).min(view.lines.len()),
+            view.lines.len()
+        ),
+        Style::new().fg(theme.muted),
+    ));
     if let Some(note) = &view.note {
         spans.push(Span::styled(
             format!("  {note}"),
-            Style::default().fg(Color::Yellow),
+            Style::new().fg(theme.running),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), footer);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(theme.surface_raised)),
+        footer,
+    );
 }
 
 /// Colors GitHub's log markers (`##[error]`, `##[group]`, …).
-fn log_line(line: &str) -> Line<'static> {
+fn log_line(line: &str, theme: &Theme) -> Line<'static> {
     let style = if line.starts_with("##[error]") {
-        Style::default().fg(Color::Red)
+        Style::new().fg(theme.failure)
     } else if line.starts_with("##[warning]") {
-        Style::default().fg(Color::Yellow)
+        Style::new().fg(theme.running)
     } else if line.starts_with("##[group]") || line.starts_with("##[endgroup]") {
-        Style::default().fg(Color::Cyan)
+        Style::new().fg(theme.muted).add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
+        Style::new()
     };
     Line::from(Span::styled(line.to_owned(), style))
-}
-
-fn row_line(row: &Row) -> Line<'static> {
-    let mut spans = vec![Span::raw("  ".repeat(row.depth as usize))];
-    if row.foldable {
-        spans.push(Span::styled(
-            if row.expanded { "▾ " } else { "▸ " },
-            Style::default().fg(Color::DarkGray),
-        ));
-    } else {
-        spans.push(Span::raw("  "));
-    }
-    if let Some(status) = row.status {
-        spans.push(Span::styled(
-            format!("{} ", status.icon()),
-            Style::default().fg(status.color()),
-        ));
-    }
-    let dim = Style::default().fg(Color::DarkGray);
-    let is_step = matches!(row.key, RowKey::Step(..));
-    if is_step && let Some(d) = &row.detail {
-        spans.push(Span::styled(format!("{d} "), dim));
-    }
-    let text_style = match (row.depth, row.is_error) {
-        (0, _) => Style::default().add_modifier(Modifier::BOLD),
-        (_, true) => Style::default().fg(Color::Red),
-        _ => Style::default(),
-    };
-    spans.push(Span::styled(row.text.clone(), text_style));
-    if !is_step && let Some(d) = &row.detail {
-        spans.push(Span::styled(format!(" {d}"), dim));
-    }
-    Line::from(spans)
 }
 
 fn open_url(url: &str) -> std::io::Result<()> {
@@ -704,5 +740,214 @@ mod tests {
         cache.insert(7, Err("GitHub API 410: gone".into()));
         v.fill(&cache);
         assert!(v.lines[0].starts_with("cannot load log"));
+    }
+
+    /// A busy snapshot: one repo running, one failed, one queued, one calm.
+    fn demo() -> Snapshot {
+        use crate::snapshot::{JobView, RepoView, StepView, WorkflowView};
+        let t = |secs_ago: i64| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            let s = now - secs_ago;
+            // Unix seconds back to RFC 3339 (civil from days).
+            let (days, rem) = (s.div_euclid(86_400), s.rem_euclid(86_400));
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            let y = yoe + era * 400 + i64::from(m <= 2);
+            Some(format!(
+                "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+                rem / 3600,
+                rem % 3600 / 60,
+                rem % 60
+            ))
+        };
+        let step = |n: u32, name: &str, status: Status, a: i64, b: Option<i64>| StepView {
+            number: n,
+            name: name.into(),
+            status,
+            started_at: if status == Status::Queued { None } else { t(a) },
+            completed_at: b.and_then(t),
+        };
+        let wf = |id: u64, name: &str, status: Status, start: i64, end: i64, jobs| WorkflowView {
+            workflow_id: id,
+            run_id: id,
+            name: name.into(),
+            branch: Some("main".into()),
+            status,
+            url: String::new(),
+            started_at: t(start),
+            updated_at: t(end),
+            jobs,
+        };
+        let job = |id: u64, name: &str, status: Status, steps| JobView {
+            id,
+            name: name.into(),
+            status,
+            url: None,
+            steps,
+        };
+        let repo = |name: &str, workflows| RepoView {
+            name: name.into(),
+            slug: format!("o/{name}"),
+            workflows: Ok(workflows),
+        };
+        Snapshot {
+            repos: vec![
+                repo(
+                    "brabo-web",
+                    vec![
+                        wf(1, "CI", Status::Success, 900, 680, None),
+                        wf(
+                            2,
+                            "Deploy",
+                            Status::Running,
+                            62,
+                            0,
+                            Some(Ok(vec![
+                                job(
+                                    20,
+                                    "build",
+                                    Status::Success,
+                                    vec![
+                                        step(1, "Set up job", Status::Success, 62, Some(60)),
+                                        step(2, "Build", Status::Success, 60, Some(24)),
+                                    ],
+                                ),
+                                job(
+                                    21,
+                                    "deploy",
+                                    Status::Running,
+                                    vec![
+                                        step(1, "Set up job", Status::Success, 24, Some(21)),
+                                        step(2, "Upload assets", Status::Running, 21, None),
+                                        step(3, "Invalidate CDN", Status::Queued, 0, None),
+                                    ],
+                                ),
+                            ])),
+                        ),
+                    ],
+                ),
+                repo(
+                    "brabo-api",
+                    vec![wf(
+                        3,
+                        "CI",
+                        Status::Failure,
+                        300,
+                        166,
+                        Some(Ok(vec![job(
+                            30,
+                            "test",
+                            Status::Failure,
+                            vec![
+                                step(1, "Set up job", Status::Success, 300, Some(298)),
+                                step(2, "Run tests", Status::Failure, 298, Some(166)),
+                                step(3, "Upload coverage", Status::Skipped, 166, Some(166)),
+                            ],
+                        )])),
+                    )],
+                ),
+                repo(
+                    "brabo-broker",
+                    vec![wf(4, "CI", Status::Queued, 30, 30, Some(Ok(vec![])))],
+                ),
+                repo(
+                    "brabo-engine",
+                    vec![
+                        wf(5, "CI", Status::Success, 2000, 1800, None),
+                        wf(6, "Release", Status::Success, 9000, 8000, None),
+                    ],
+                ),
+            ],
+        }
+    }
+
+    fn demo_app(theme: &str) -> App {
+        let mut app = App {
+            snapshot: Some(demo()),
+            rows: Vec::new(),
+            list: ListState::default(),
+            folds: Folds::default(),
+            expand: ExpandRequest::default(),
+            loading: false,
+            message: None,
+            last_refresh: Some(Instant::now()),
+            watcher: None,
+            filter_input: None,
+            filter_text: String::new(),
+            log_view: None,
+            log_cache: HashMap::new(),
+            theme: Theme::builtin(theme).unwrap(),
+            bar: BarStyle::Line,
+            started: Instant::now(),
+        };
+        app.rebuild();
+        app.list.select(Some(3));
+        app
+    }
+
+    #[test]
+    fn draws_every_theme_at_every_width() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let client = Client::new("test".into()).unwrap();
+        for theme in crate::theme::BUILTIN {
+            for width in [50, 79, 90, 120, 160] {
+                let mut app = demo_app(theme);
+                let mut term = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                term.draw(|f| draw(f, &mut app, &client)).unwrap();
+                let buffer = term.backend().buffer();
+                let line: String = (0..width).map(|x| buffer[(x, 0)].symbol()).collect();
+                assert!(line.contains("popier"), "{theme} at {width}: {line}");
+            }
+        }
+    }
+
+    /// Writes an HTML picture of the dashboard: `POPIER_RENDER=<dir> cargo test render -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_html() {
+        use ratatui::style::Color;
+        use ratatui::{Terminal, backend::TestBackend};
+        let dir = std::env::var("POPIER_RENDER").unwrap();
+        let client = Client::new("test".into()).unwrap();
+        for theme in crate::theme::BUILTIN {
+            let mut app = demo_app(theme);
+            let (w, h) = (112, 22);
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &mut app, &client)).unwrap();
+            let buf = term.backend().buffer();
+            let hex = |c: Color, d: &str| match c {
+                Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+                Color::Reset => d.into(),
+                other => format!("{other}").to_lowercase(),
+            };
+            let mut html = String::from(
+                "<pre style=\"font:13px/20px 'JetBrains Mono',monospace;margin:0;background:#111;color:#ddd\">",
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    let c = &buf[(x, y)];
+                    let bold = c.modifier.contains(Modifier::BOLD);
+                    html.push_str(&format!(
+                        "<span style=\"color:{};background:{};font-weight:{}\">{}</span>",
+                        hex(c.fg, "inherit"),
+                        hex(c.bg, "transparent"),
+                        if bold { 700 } else { 400 },
+                        c.symbol().replace('&', "&amp;").replace('<', "&lt;")
+                    ));
+                }
+                html.push('\n');
+            }
+            html.push_str("</pre>");
+            std::fs::write(format!("{dir}/{theme}.html"), html).unwrap();
+        }
     }
 }

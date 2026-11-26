@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::theme::BarStyle;
+
 /// Sample config written by `popier init`.
 pub const SAMPLE: &str = include_str!("../examples/config.toml");
 
@@ -34,6 +36,12 @@ pub struct Settings {
     pub notify: bool,
     /// Only notify for these branches. Empty means every branch.
     pub notify_branches: Vec<String>,
+    /// Color theme: a built-in (`noite`, `brasa`, `papel`, `alto-contraste`,
+    /// `terminal`) or `~/.config/popier/themes/<name>.toml`. Unset picks
+    /// `noite`, or `terminal` when the terminal lacks true color.
+    pub theme: Option<String>,
+    /// Progress bar style: `line` or `block`.
+    pub bar: BarStyle,
 }
 
 impl Default for Settings {
@@ -44,6 +52,8 @@ impl Default for Settings {
             runs_per_repo: 30,
             notify: true,
             notify_branches: Vec::new(),
+            theme: None,
+            bar: BarStyle::Line,
         }
     }
 }
@@ -143,6 +153,19 @@ mod tests {
         .unwrap();
         assert!(!config.settings.notify);
         assert_eq!(config.settings.notify_branches, vec!["main"]);
+    }
+
+    #[test]
+    fn theme_settings() {
+        let config = Config::parse("[[repo]]\nslug = \"a/b\"\n").unwrap();
+        assert_eq!(config.settings.theme, None);
+        assert_eq!(config.settings.bar, BarStyle::Line);
+        let config = Config::parse(
+            "[settings]\ntheme = \"brasa\"\nbar = \"block\"\n[[repo]]\nslug = \"a/b\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.settings.theme.as_deref(), Some("brasa"));
+        assert_eq!(config.settings.bar, BarStyle::Block);
     }
 
     #[test]
