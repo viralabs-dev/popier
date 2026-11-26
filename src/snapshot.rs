@@ -36,6 +36,7 @@ pub struct WorkflowView {
 
 #[derive(Debug, Clone)]
 pub struct JobView {
+    pub id: u64,
     pub name: String,
     pub status: Status,
     pub url: Option<String>,
@@ -47,6 +48,8 @@ pub struct StepView {
     pub number: u32,
     pub name: String,
     pub status: Status,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 /// Decides which workflows get their jobs fetched.
@@ -182,6 +185,7 @@ fn run_status(run: &RunDto) -> Status {
 fn job_view(job: JobDto) -> JobView {
     JobView {
         status: Status::from_github(&job.status, job.conclusion.as_deref()),
+        id: job.id,
         name: job.name,
         url: job.html_url,
         steps: job
@@ -191,6 +195,8 @@ fn job_view(job: JobDto) -> JobView {
                 status: Status::from_github(&s.status, s.conclusion.as_deref()),
                 number: s.number,
                 name: s.name,
+                started_at: s.started_at,
+                completed_at: s.completed_at,
             })
             .collect(),
     }

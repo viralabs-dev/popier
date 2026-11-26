@@ -60,6 +60,7 @@ pub struct JobsPage {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct JobDto {
+    pub id: u64,
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
@@ -74,6 +75,8 @@ pub struct StepDto {
     pub name: String,
     pub status: String,
     pub conclusion: Option<String>,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
 }
 
 /// Rate limit as reported by the last response.
@@ -85,6 +88,8 @@ pub struct RateLimit {
 
 pub struct Client {
     http: reqwest::Client,
+    /// Same client without automatic redirects, for log downloads.
+    http_no_redirect: reqwest::Client,
     token: String,
     cache: Mutex<HashMap<String, (String, Body)>>,
     rate: Mutex<RateLimit>,
@@ -92,11 +97,15 @@ pub struct Client {
 
 impl Client {
     pub fn new(token: String) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("popier/", env!("CARGO_PKG_VERSION")))
+        let agent = concat!("popier/", env!("CARGO_PKG_VERSION"));
+        let http = reqwest::Client::builder().user_agent(agent).build()?;
+        let http_no_redirect = reqwest::Client::builder()
+            .user_agent(agent)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Self {
             http,
+            http_no_redirect,
             token,
             cache: Mutex::new(HashMap::new()),
             rate: Mutex::new(RateLimit::default()),
@@ -132,6 +141,40 @@ impl Client {
     pub async fn list_jobs(&self, slug: &str, run_id: u64) -> Result<Vec<JobDto>> {
         let url = format!("{API}/repos/{slug}/actions/runs/{run_id}/jobs?per_page=100");
         Ok(self.get_json::<JobsPage>(&url).await?.jobs)
+    }
+
+    /// Plain-text log of a job. GitHub answers with a redirect to a signed
+    /// storage URL; that URL is fetched without the token, so the token never
+    /// leaves api.github.com.
+    pub async fn job_log(&self, slug: &str, job_id: u64) -> Result<String> {
+        let url = format!("{API}/repos/{slug}/actions/jobs/{job_id}/logs");
+        let resp = self
+            .http_no_redirect
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header(header::ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .with_context(|| format!("request failed: {url}"))?;
+        self.record_rate_limit(resp.headers());
+
+        let status = resp.status();
+        if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("log redirect without a location"))?
+                .to_owned();
+            let log = self.http.get(&location).send().await?.error_for_status()?;
+            return Ok(log.text().await?);
+        }
+        if status.is_success() {
+            return Ok(resp.text().await?);
+        }
+        let text = resp.text().await.unwrap_or_default();
+        bail!("GitHub API {}: {}", status.as_u16(), api_message(&text));
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -174,11 +217,7 @@ impl Client {
             }
             status => {
                 let text = resp.text().await.unwrap_or_default();
-                let message = serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_owned))
-                    .unwrap_or(text);
-                bail!("GitHub API {}: {}", status.as_u16(), message);
+                bail!("GitHub API {}: {}", status.as_u16(), api_message(&text));
             }
         };
 
@@ -195,6 +234,14 @@ impl Client {
             rate.limit = Some(limit);
         }
     }
+}
+
+/// The `message` field of a GitHub error body, or the raw body.
+fn api_message(text: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_owned))
+        .unwrap_or_else(|| text.to_owned())
 }
 
 /// Finds a token: `GITHUB_TOKEN`, then `GH_TOKEN`, then `gh auth token`.
@@ -262,7 +309,7 @@ mod tests {
 
     #[test]
     fn parses_jobs_payload() {
-        let json = r#"{"total_count":1,"jobs":[{"name":"build","status":"in_progress",
+        let json = r#"{"total_count":1,"jobs":[{"id":11,"name":"build","status":"in_progress",
             "conclusion":null,"html_url":null,
             "steps":[{"number":1,"name":"Checkout","status":"completed","conclusion":"success"}]}]}"#;
         let page: JobsPage = serde_json::from_str(json).unwrap();

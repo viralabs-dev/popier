@@ -3,6 +3,7 @@
 //! A background task refreshes the snapshot every `refresh_secs` (or on demand)
 //! and sends it to the UI loop, which only draws and handles keys.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use tokio::sync::{mpsc, watch};
 use crate::config::Config;
 use crate::filter::RunFilter;
 use crate::github::Client;
+use crate::logs;
 use crate::notify;
 use crate::snapshot::{self, ExpandRequest, Snapshot};
 use crate::tree::{self, Folds, Row, RowKey};
@@ -37,6 +39,53 @@ struct App {
     filter_input: Option<String>,
     /// Text of the applied filter, shown in the footer.
     filter_text: String,
+    /// Open log panel (`l` on a step or job).
+    log_view: Option<LogView>,
+    /// Downloaded job logs by job id, kept in memory for this session only.
+    log_cache: HashMap<u64, Result<String, String>>,
+}
+
+struct LogTarget {
+    slug: String,
+    view: LogView,
+}
+
+/// What the log panel shows.
+struct LogView {
+    title: String,
+    job_id: u64,
+    /// Step bounds; `None` shows the whole job.
+    step: Option<(Option<String>, Option<String>)>,
+    /// Toggled with `w`: whole job instead of the step.
+    whole: bool,
+    lines: Vec<String>,
+    note: Option<String>,
+    /// Lines scrolled from the top; `None` means "stick to the bottom".
+    scroll: Option<usize>,
+}
+
+impl LogView {
+    /// Recomputes the visible lines from the cached log, if it arrived.
+    fn fill(&mut self, cache: &HashMap<u64, Result<String, String>>) {
+        self.note = None;
+        self.lines = match cache.get(&self.job_id) {
+            None => vec!["loading log…".into()],
+            Some(Err(err)) => vec![format!("cannot load log: {err}")],
+            Some(Ok(log)) => match (&self.step, self.whole) {
+                (Some((start, end)), false) => {
+                    match logs::slice_step(log, start.as_deref(), end.as_deref()) {
+                        Some(lines) => logs::tail(lines, logs::STEP_TAIL),
+                        None => {
+                            self.note = Some("step not found in log; showing end of job".into());
+                            logs::tail(logs::whole_job(log), logs::STEP_TAIL)
+                        }
+                    }
+                }
+                _ => logs::whole_job(log),
+            },
+        };
+        self.scroll = None;
+    }
 }
 
 impl App {
@@ -121,6 +170,43 @@ impl App {
         needs_fetch
     }
 
+    /// Log panel for the selected job or step row, with its repository slug.
+    fn log_target(&self) -> Option<LogTarget> {
+        let (run_id, job_idx, step_no) = match self.selected()?.key {
+            RowKey::Job(run, job) => (run, job, None),
+            RowKey::Step(run, job, step) => (run, job, Some(step)),
+            _ => return None,
+        };
+        let snapshot = self.snapshot.as_ref()?;
+        for repo in &snapshot.repos {
+            let Ok(workflows) = &repo.workflows else {
+                continue;
+            };
+            let Some(wf) = workflows.iter().find(|w| w.run_id == run_id) else {
+                continue;
+            };
+            let job = wf.jobs.as_ref()?.as_ref().ok()?.get(job_idx)?;
+            let step = step_no.and_then(|n| job.steps.iter().find(|s| s.number == n));
+            let mut title = format!("{} › {} › {}", repo.name, wf.name, job.name);
+            if let Some(step) = step {
+                title.push_str(&format!(" › {}. {}", step.number, step.name));
+            }
+            return Some(LogTarget {
+                slug: repo.slug.clone(),
+                view: LogView {
+                    title,
+                    job_id: job.id,
+                    step: step.map(|s| (s.started_at.clone(), s.completed_at.clone())),
+                    whole: false,
+                    lines: Vec::new(),
+                    note: None,
+                    scroll: None,
+                },
+            });
+        }
+        None
+    }
+
     fn has_jobs(&self, run_id: u64) -> bool {
         self.snapshot.iter().flat_map(|s| &s.repos).any(|repo| {
             repo.workflows
@@ -176,13 +262,15 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
             .then(|| notify::Watcher::new(config.settings.notify_branches.clone())),
         filter_input: None,
         filter_text: String::new(),
+        log_view: None,
+        log_cache: HashMap::new(),
     };
 
     let mut terminal = ratatui::init();
     let result = ui_loop(
         &mut terminal,
         &mut app,
-        &client,
+        client.clone(),
         &mut snap_rx,
         &refresh_tx,
         &expand_tx,
@@ -194,7 +282,7 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
 fn ui_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    client: &Client,
+    client: Arc<Client>,
     snap_rx: &mut mpsc::UnboundedReceiver<Snapshot>,
     refresh_tx: &mpsc::UnboundedSender<()>,
     expand_tx: &watch::Sender<ExpandRequest>,
@@ -221,6 +309,8 @@ fn ui_loop(
         request_refresh(app);
     };
 
+    let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(u64, Result<String, String>)>();
+
     loop {
         while let Ok(snap) = snap_rx.try_recv() {
             let filtering = app.expand.filter.is_some();
@@ -238,7 +328,14 @@ fn ui_loop(
             app.rebuild();
         }
 
-        terminal.draw(|frame| draw(frame, app, client))?;
+        while let Ok((job_id, log)) = log_rx.try_recv() {
+            app.log_cache.insert(job_id, log);
+            if let Some(view) = app.log_view.as_mut().filter(|v| v.job_id == job_id) {
+                view.fill(&app.log_cache);
+            }
+        }
+
+        terminal.draw(|frame| draw(frame, app, &client))?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;
@@ -250,6 +347,31 @@ fn ui_loop(
             continue;
         }
         app.message = None;
+
+        // Log panel open: keys scroll it.
+        if let Some(view) = app.log_view.as_mut() {
+            let current = view.scroll.unwrap_or(usize::MAX);
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('l') => app.log_view = None,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(());
+                }
+                KeyCode::Down | KeyCode::Char('j') => view.scroll = Some(current.saturating_add(1)),
+                KeyCode::Up | KeyCode::Char('k') => view.scroll = Some(current.saturating_sub(1)),
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    view.scroll = Some(current.saturating_add(20))
+                }
+                KeyCode::PageUp => view.scroll = Some(current.saturating_sub(20)),
+                KeyCode::Home | KeyCode::Char('g') => view.scroll = Some(0),
+                KeyCode::End | KeyCode::Char('G') => view.scroll = None,
+                KeyCode::Char('w') if view.step.is_some() => {
+                    view.whole = !view.whole;
+                    view.fill(&app.log_cache);
+                }
+                _ => {}
+            }
+            continue;
+        }
 
         // Filter field has focus: keys edit the text, the filter applies live.
         if let Some(input) = app.filter_input.as_mut() {
@@ -309,6 +431,26 @@ fn ui_loop(
                 request_refresh(app);
             }
             KeyCode::Char('r') => request_refresh(app),
+            KeyCode::Char('l') => {
+                if let Some(target) = app.log_target() {
+                    let mut view = target.view;
+                    if !app.log_cache.contains_key(&view.job_id) {
+                        let (client, tx, slug, job_id) =
+                            (client.clone(), log_tx.clone(), target.slug, view.job_id);
+                        tokio::spawn(async move {
+                            let log = client
+                                .job_log(&slug, job_id)
+                                .await
+                                .map_err(|e| format!("{e:#}"));
+                            let _ = tx.send((job_id, log));
+                        });
+                    }
+                    view.fill(&app.log_cache);
+                    app.log_view = Some(view);
+                } else {
+                    app.message = Some("select a job or step to see its log".into());
+                }
+            }
             KeyCode::Char('o') => {
                 if let Some(url) = app.selected().and_then(|r| r.url.clone()) {
                     app.message = Some(match open_url(&url) {
@@ -325,6 +467,11 @@ fn ui_loop(
 fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
     let [main, footer] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+
+    if let Some(view) = app.log_view.as_mut() {
+        draw_log(frame, view, main, footer);
+        return;
+    }
 
     let items: Vec<ListItem> = app.rows.iter().map(row_line).map(ListItem::new).collect();
     let title = if app.loading {
@@ -356,7 +503,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
     }
 
     let mut spans = vec![Span::styled(
-        " ↑↓/jk move  ⏎ fold  Tab next repo  / filter  a all  r refresh  o open  q quit ",
+        " ↑↓/jk move  ⏎ fold  Tab next repo  / filter  l log  a all  r refresh  o open  q quit ",
         Style::default().fg(Color::DarkGray),
     )];
     if !app.filter_text.is_empty() {
@@ -385,6 +532,61 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), footer);
+}
+
+fn draw_log(
+    frame: &mut ratatui::Frame,
+    view: &mut LogView,
+    main: ratatui::layout::Rect,
+    footer: ratatui::layout::Rect,
+) {
+    let height = main.height.saturating_sub(2) as usize;
+    let max_scroll = view.lines.len().saturating_sub(height);
+    let scroll = view.scroll.map_or(max_scroll, |s| s.min(max_scroll));
+    view.scroll = view.scroll.map(|_| scroll);
+
+    let lines: Vec<Line> = view.lines.iter().map(|l| log_line(l)).collect();
+    let scope = if view.step.is_none() || view.whole {
+        "job"
+    } else {
+        "step"
+    };
+    let title = format!(" log ({scope}) · {} ", view.title);
+    let paragraph = Paragraph::new(lines)
+        .block(Block::bordered().title(title.bold()))
+        .scroll((scroll as u16, 0));
+    frame.render_widget(paragraph, main);
+
+    let mut spans = vec![Span::styled(
+        " ↑↓/jk scroll  PgUp/PgDn page  g/G top/bottom  w step/job  Esc close ",
+        Style::default().fg(Color::DarkGray),
+    )];
+    spans.push(Span::raw(format!(
+        " {}/{} lines",
+        (scroll + height).min(view.lines.len()),
+        view.lines.len()
+    )));
+    if let Some(note) = &view.note {
+        spans.push(Span::styled(
+            format!("  {note}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), footer);
+}
+
+/// Colors GitHub's log markers (`##[error]`, `##[group]`, …).
+fn log_line(line: &str) -> Line<'static> {
+    let style = if line.starts_with("##[error]") {
+        Style::default().fg(Color::Red)
+    } else if line.starts_with("##[warning]") {
+        Style::default().fg(Color::Yellow)
+    } else if line.starts_with("##[group]") || line.starts_with("##[endgroup]") {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default()
+    };
+    Line::from(Span::styled(line.to_owned(), style))
 }
 
 fn row_line(row: &Row) -> Line<'static> {
@@ -427,4 +629,50 @@ fn open_url(url: &str) -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(step: Option<(&str, &str)>) -> LogView {
+        LogView {
+            title: String::new(),
+            job_id: 7,
+            step: step.map(|(a, b)| (Some(a.to_owned()), Some(b.to_owned()))),
+            whole: false,
+            lines: Vec::new(),
+            note: None,
+            scroll: Some(3),
+        }
+    }
+
+    const LOG: &str =
+        "2026-11-25T22:19:40.1Z a\n2026-11-25T22:19:44.0Z b\n2026-11-25T22:19:50.0Z c";
+
+    #[test]
+    fn log_view_states() {
+        let mut cache = HashMap::new();
+        let mut v = view(Some(("2026-11-25T22:19:44Z", "2026-11-25T22:19:45Z")));
+        v.fill(&cache);
+        assert_eq!(v.lines, vec!["loading log…"]);
+
+        cache.insert(7, Ok(LOG.to_owned()));
+        v.fill(&cache);
+        assert_eq!(v.lines, vec!["b"]);
+        assert_eq!(v.scroll, None);
+
+        v.whole = true;
+        v.fill(&cache);
+        assert_eq!(v.lines, vec!["a", "b", "c"]);
+
+        let mut missing = view(Some(("2026-11-26T00:00:00Z", "2026-11-26T00:00:01Z")));
+        missing.fill(&cache);
+        assert!(missing.note.is_some());
+        assert_eq!(missing.lines.len(), 3);
+
+        cache.insert(7, Err("GitHub API 410: gone".into()));
+        v.fill(&cache);
+        assert!(v.lines[0].starts_with("cannot load log"));
+    }
 }

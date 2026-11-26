@@ -4,6 +4,7 @@
 mod config;
 mod filter;
 mod github;
+mod logs;
 mod notify;
 mod snapshot;
 mod status;
