@@ -27,6 +27,9 @@ jobs:
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check the binary can update itself
+        # Installed copies get new releases through --update; never ship one without it.
+        run: target/${{ matrix.target }}/release/popier --help | grep -q -- '--update'
       - name: Package
         run: |
           mkdir dist

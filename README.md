@@ -81,7 +81,9 @@ installs it into `~/.local/bin` (set `POPIER_INSTALL_DIR` for another folder,
 
 **Update:** `popier --update` replaces the binary with the latest release the
 same way, checking its SHA-256 first; if the download or the checksum fails,
-nothing is changed. A popier built from source updates with
+nothing is changed. Every release ships `--update` (the release build checks for
+it), and each batch of new features merged into `main` gets a release, so
+`popier --update` always brings the latest. A popier built from source updates with
 `cargo install --git https://github.com/viralabs-dev/popier --force`.
 
 **Prebuilt binary by hand:** download `popier-x86_64-unknown-linux-musl.tar.gz`

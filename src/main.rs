@@ -204,3 +204,17 @@ fn write_config(path: &PathBuf, text: &str) -> Result<()> {
     println!("wrote {}", path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `popier --update` is how installed copies get new releases: every
+    /// version must keep it, or users stay stuck on that version.
+    #[test]
+    fn update_flag_is_always_there() {
+        let cli = Cli::try_parse_from(["popier", "--update"]).unwrap();
+        assert!(cli.update);
+        assert!(cli.command.is_none());
+    }
+}
