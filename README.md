@@ -122,6 +122,8 @@ popier -c other.toml # use another config file
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
 | `a` | toggle expanding every workflow |
 | `r` | refresh now |
+| `d` / `→` | open or close the details sidebar on the right (`←` closes it) |
+| mouse | click a row to select it and fold or unfold it; the wheel scrolls (hold `Shift` to select text) |
 | `t` | next color theme (noite → brasa → papel → alto-contraste → terminal) |
 | `o` | open the selected item in the browser |
 | `q` / `Esc` | quit (`Esc` clears an active filter first) |
@@ -148,6 +150,20 @@ Without `theme`, popier uses `noite` on true-color terminals and `terminal`
 `surface`, `surface-raised`, `selection`, `line`, `track`, `ink`, `muted`,
 `faint`, `accent`, `on-accent`, `running`, `queued`, `success`, `failure`,
 `skipped`, `cancelled`.
+
+## Details sidebar
+
+`d` (or `→`) opens a panel on the right with everything popier knows about the
+selected row, and it follows the selection as you move:
+
+- **group**: health bar, repos per state, what needs attention, every repo with its lead pipeline;
+- **repo**: slug, lead pipeline progress, every workflow with branch, bar and last run;
+- **workflow**: wide progress bar, steps done, when it started, how long it took, run id, where it failed, its jobs;
+- **job**: progress and every step with its duration;
+- **step**: position in the job, start, duration and state.
+
+On terminals narrower than 90 columns the panel covers the tree; `d`, `←` or
+`Esc`-free navigation keep working, and `d` closes it.
 
 ## Filtering
 

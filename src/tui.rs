@@ -8,15 +8,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseButton, MouseEvent, MouseEventKind,
+};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
 use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
+use crate::detail;
 use crate::filter::RunFilter;
 use crate::github::Client;
 use crate::logs;
@@ -52,6 +57,10 @@ struct App {
     bar: BarStyle,
     /// Drives the spinner.
     started: Instant,
+    /// Details sidebar open (`d`).
+    details: bool,
+    /// Where the tree list was last drawn, to map mouse clicks to rows.
+    list_area: Rect,
 }
 
 struct LogTarget {
@@ -312,9 +321,13 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         theme,
         bar: config.settings.bar,
         started: Instant::now(),
+        details: false,
+        list_area: Rect::default(),
     };
 
     let mut terminal = ratatui::init();
+    // Clicks fold and unfold rows; hold Shift to select text as usual.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = ui_loop(
         &mut terminal,
         &mut app,
@@ -323,6 +336,7 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         &refresh_tx,
         &expand_tx,
     );
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -388,8 +402,15 @@ fn ui_loop(
         if !event::poll(Duration::from_millis(100))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let key = match event::read()? {
+            Event::Key(key) => key,
+            Event::Mouse(mouse) => {
+                if on_mouse(app, mouse) {
+                    request_refresh(app);
+                }
+                continue;
+            }
+            _ => continue,
         };
         if key.kind != KeyEventKind::Press {
             continue;
@@ -479,6 +500,9 @@ fn ui_loop(
                 request_refresh(app);
             }
             KeyCode::Char('r') => request_refresh(app),
+            KeyCode::Char('d') => app.details = !app.details,
+            KeyCode::Right => app.details = true,
+            KeyCode::Left if app.details => app.details = false,
             KeyCode::Char('t') => {
                 app.theme = app.theme.next();
                 app.message = Some(format!(
@@ -558,6 +582,17 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         head,
     );
 
+    let (main, side) = match (app.details, detail::panel_width(main.width)) {
+        (false, _) => (main, None),
+        (true, Some(w)) => {
+            let [list, side] =
+                Layout::horizontal([Constraint::Min(1), Constraint::Length(w)]).areas(main);
+            (list, Some(side))
+        }
+        // Too narrow for both: the panel covers the list.
+        (true, None) => (main, Some(main)),
+    };
+    app.list_area = main;
     let items: Vec<ListItem> = paint::rows(&app.rows, &look, main.width)
         .into_iter()
         .map(ListItem::new)
@@ -568,6 +603,9 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
             .add_modifier(Modifier::BOLD),
     );
     frame.render_stateful_widget(list, main, &mut app.list);
+    if let Some(side) = side {
+        draw_details(frame, app, &look, side);
+    }
 
     let bar = Style::new().bg(theme.surface_raised);
     let tag = Style::new()
@@ -595,6 +633,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
             ("⇥", "next repo"),
             ("/", "filter"),
             ("l", "log"),
+            ("d", "details"),
             ("t", "theme"),
             ("a", "all"),
             ("r", "refresh"),
@@ -611,6 +650,80 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         spans.push(Span::styled(format!("  {msg}"), Style::new().fg(theme.ink)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), footer);
+}
+
+fn draw_details(frame: &mut ratatui::Frame, app: &App, look: &Look, area: Rect) {
+    let theme = look.theme;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let inner_w = area.width.saturating_sub(4) as usize;
+    let lines = match (app.snapshot.as_ref(), app.selected()) {
+        (Some(snap), Some(row)) => detail::lines(snap, row, look, inner_w, now),
+        _ => vec![Line::from(Span::styled(
+            "select a row to see its details",
+            Style::new().fg(theme.muted),
+        ))],
+    };
+    let title = Line::from(vec![
+        Span::styled(
+            " ◆ ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "details ",
+            Style::new().fg(theme.ink).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let panel = Paragraph::new(lines)
+        .block(
+            Block::bordered()
+                .border_style(Style::new().fg(theme.line))
+                .title(title)
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        )
+        .style(Style::new().fg(theme.ink).bg(theme.surface));
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(panel, area);
+}
+
+/// A click selects a row and folds or unfolds it; the wheel moves the
+/// selection (or scrolls the log). Returns true when new data must be fetched.
+fn on_mouse(app: &mut App, mouse: MouseEvent) -> bool {
+    if let Some(view) = app.log_view.as_mut() {
+        let current = view.scroll.unwrap_or(usize::MAX);
+        match mouse.kind {
+            MouseEventKind::ScrollDown => view.scroll = Some(current.saturating_add(3)),
+            MouseEventKind::ScrollUp => view.scroll = Some(current.saturating_sub(3)),
+            _ => {}
+        }
+        return false;
+    }
+    match mouse.kind {
+        MouseEventKind::ScrollDown => app.move_by(3),
+        MouseEventKind::ScrollUp => app.move_by(-3),
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(index) = clicked_row(app.list_area, app.list.offset(), mouse)
+                && index < app.rows.len()
+            {
+                app.list.select(Some(index));
+                if app.rows[index].foldable {
+                    return app.toggle();
+                }
+            }
+        }
+        _ => {}
+    }
+    false
+}
+
+/// Row index under the mouse, if it is inside the list.
+fn clicked_row(area: Rect, offset: usize, mouse: MouseEvent) -> Option<usize> {
+    let inside = mouse.column >= area.x
+        && mouse.column < area.x + area.width
+        && mouse.row >= area.y
+        && mouse.row < area.y + area.height;
+    inside.then(|| offset + (mouse.row - area.y) as usize)
 }
 
 fn draw_log(
@@ -917,6 +1030,8 @@ mod tests {
             theme: Theme::builtin(theme).unwrap(),
             bar: BarStyle::Line,
             started: Instant::now(),
+            details: false,
+            list_area: Rect::default(),
         };
         app.rebuild();
         app.list.select(Some(3));
@@ -949,7 +1064,15 @@ mod tests {
         let client = Client::new("test".into()).unwrap();
         for theme in crate::theme::BUILTIN {
             let mut app = demo_app(theme);
-            let (w, h) = (112, 22);
+            // POPIER_DETAILS=<row> opens the sidebar on that row.
+            if let Some(row) = std::env::var("POPIER_DETAILS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+            {
+                app.details = true;
+                app.list.select(Some(row));
+            }
+            let (w, h) = (140, 26);
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             term.draw(|f| draw(f, &mut app, &client)).unwrap();
             let buf = term.backend().buffer();
@@ -977,6 +1100,59 @@ mod tests {
             }
             html.push_str("</pre>");
             std::fs::write(format!("{dir}/{theme}.html"), html).unwrap();
+        }
+    }
+
+    #[test]
+    fn click_maps_to_row_under_the_mouse() {
+        use crossterm::event::KeyModifiers;
+        let area = Rect::new(0, 3, 80, 10);
+        let at = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(clicked_row(area, 0, at(5, 3)), Some(0));
+        assert_eq!(clicked_row(area, 4, at(5, 5)), Some(6));
+        assert_eq!(clicked_row(area, 0, at(5, 2)), None);
+        assert_eq!(clicked_row(area, 0, at(80, 5)), None);
+    }
+
+    #[test]
+    fn clicking_a_repo_folds_it_and_the_panel_draws() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = demo_app("noite");
+        app.list_area = Rect::new(0, 3, 120, 18);
+        let repo = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.key, RowKey::Repo(_)))
+            .unwrap();
+        let before = app.rows.len();
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 3 + repo as u16,
+            modifiers: KeyModifiers::NONE,
+        };
+        on_mouse(&mut app, click);
+        assert!(app.rows.len() < before, "the repo folded");
+
+        let client = Client::new("test".into()).unwrap();
+        for width in [60, 100, 160] {
+            for i in 0..app.rows.len() {
+                app.details = true;
+                app.list.select(Some(i));
+                let mut term = Terminal::new(TestBackend::new(width, 24)).unwrap();
+                term.draw(|f| draw(f, &mut app, &client)).unwrap();
+                let buf = term.backend().buffer();
+                let text: String = (0..24)
+                    .flat_map(|y| (0..width).map(move |x| (x, y)))
+                    .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+                    .collect();
+                assert!(text.contains("details"), "panel at width {width}, row {i}");
+            }
         }
     }
 }
