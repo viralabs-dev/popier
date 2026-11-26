@@ -3,7 +3,7 @@
 //! A background task refreshes the snapshot every `refresh_secs` (or on demand)
 //! and sends it to the UI loop, which only draws and handles keys.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,7 @@ use crate::github::Client;
 use crate::logs;
 use crate::notify;
 use crate::paint::{self, Look};
-use crate::snapshot::{self, ExpandRequest, Snapshot};
+use crate::snapshot::{self, ExpandRequest, RepoView, Snapshot, WorkflowView};
 use crate::status::Status;
 use crate::theme::{BarStyle, Theme};
 use crate::tree::{self, Folds, Row, RowKey};
@@ -64,6 +64,9 @@ struct App {
     details: bool,
     /// Where the tree list was last drawn, to map mouse clicks to rows.
     list_area: Rect,
+    /// Runs opened with `A` before their jobs were fetched: their steps open
+    /// when the jobs arrive.
+    open_steps_when_loaded: HashSet<u64>,
 }
 
 struct LogTarget {
@@ -454,6 +457,161 @@ impl App {
         None
     }
 
+    /// `a`: closes everything when anything is open, otherwise opens every
+    /// group, repo and workflow (fetching the jobs of the quiet ones).
+    /// Returns whether a refresh is needed.
+    fn toggle_all(&mut self) -> bool {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return false;
+        };
+        let groups: HashSet<String> = snapshot
+            .repos
+            .iter()
+            .filter_map(|r| r.group.clone())
+            .collect();
+        let anything_open = self.rows.iter().any(|r| r.depth > 0);
+        let needs_fetch = if anything_open {
+            self.folds = Folds {
+                collapsed_groups: groups,
+                collapsed_repos: snapshot.repos.iter().map(|r| r.slug.clone()).collect(),
+                collapsed_workflows: snapshot
+                    .repos
+                    .iter()
+                    .flat_map(workflows)
+                    .map(|w| w.run_id)
+                    .collect(),
+                ..Folds::default()
+            };
+            self.expand.all = false;
+            self.expand.pinned.clear();
+            self.open_steps_when_loaded.clear();
+            self.message = Some("closed everything · a opens it all".into());
+            false
+        } else {
+            self.folds = Folds {
+                open_calm: groups,
+                ..Folds::default()
+            };
+            self.expand.all = true;
+            self.message = Some("opened everything · a closes it all".into());
+            true
+        };
+        self.rebuild();
+        needs_fetch
+    }
+
+    /// `A`: opens or closes the selected row and everything under it, down to
+    /// the steps' logs. Returns whether a refresh is needed.
+    fn toggle_subtree(&mut self) -> bool {
+        let Some(row) = self.selected().cloned() else {
+            return false;
+        };
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return false;
+        };
+        // What the row covers: repos, and within them one run or one job.
+        let (slugs, run, job): (Vec<String>, Option<u64>, Option<usize>) = match &row.key {
+            RowKey::Group(name) | RowKey::Calm(name) => (
+                snapshot
+                    .repos
+                    .iter()
+                    .filter(|r| r.group.as_deref() == Some(name.as_str()))
+                    .map(|r| r.slug.clone())
+                    .collect(),
+                None,
+                None,
+            ),
+            RowKey::Repo(slug) => (vec![slug.clone()], None, None),
+            RowKey::Workflow(run) => (Vec::new(), Some(*run), None),
+            RowKey::Job(run, job) => (Vec::new(), Some(*run), Some(*job)),
+            RowKey::Step(..) | RowKey::Log(..) => return self.toggle(),
+            RowKey::Note(..) => return false,
+        };
+        let in_scope =
+            |slug: &str, w: &WorkflowView| slugs.iter().any(|s| s == slug) || run == Some(w.run_id);
+        let scoped: Vec<(String, &WorkflowView)> = snapshot
+            .repos
+            .iter()
+            .flat_map(|r| workflows(r).map(move |w| (r.slug.clone(), w)))
+            .filter(|(slug, w)| in_scope(slug, w))
+            .collect();
+        let steps: Vec<(u64, usize, u32)> = scoped
+            .iter()
+            .flat_map(|(_, w)| foldable_steps(w))
+            .filter(|&(_, j, _)| job.is_none_or(|want| want == j))
+            .collect();
+        let closing = match row.key {
+            RowKey::Job(..) => steps.iter().any(|s| self.folds.open_steps.contains(s)),
+            _ => row.expanded,
+        };
+
+        let mut needs_fetch = false;
+        if closing {
+            for (_, w) in &scoped {
+                self.open_steps_when_loaded.remove(&w.run_id);
+            }
+            for s in &steps {
+                self.folds.open_steps.remove(s);
+            }
+            if job.is_none() {
+                for (_, w) in &scoped {
+                    self.folds.collapsed_workflows.insert(w.run_id);
+                    self.expand.pinned.remove(&w.run_id);
+                }
+                for slug in &slugs {
+                    self.folds.collapsed_repos.insert(slug.clone());
+                }
+            }
+            match &row.key {
+                RowKey::Group(name) => {
+                    self.folds.collapsed_groups.insert(name.clone());
+                }
+                RowKey::Calm(name) => {
+                    self.folds.open_calm.remove(name);
+                }
+                _ => {}
+            }
+        } else {
+            match &row.key {
+                RowKey::Group(name) | RowKey::Calm(name) => {
+                    self.folds.collapsed_groups.remove(name);
+                    self.folds.open_calm.insert(name.clone());
+                }
+                _ => {}
+            }
+            for slug in &slugs {
+                self.folds.collapsed_repos.remove(slug);
+            }
+            for (_, w) in &scoped {
+                self.folds.collapsed_workflows.remove(&w.run_id);
+                if w.jobs.is_none() {
+                    self.expand.pinned.insert(w.run_id);
+                    self.open_steps_when_loaded.insert(w.run_id);
+                    needs_fetch = true;
+                }
+            }
+            self.folds.open_steps.extend(steps);
+        }
+        let key = row.key.clone();
+        self.rebuild();
+        if let Some(i) = self.rows.iter().position(|r| r.key == key) {
+            self.list.select(Some(i));
+        }
+        needs_fetch
+    }
+
+    /// Opens the steps of runs opened with `A` whose jobs just arrived.
+    fn open_loaded_steps(&mut self) {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        for w in snapshot.repos.iter().flat_map(workflows) {
+            if w.jobs.is_some() && self.open_steps_when_loaded.remove(&w.run_id) {
+                self.folds.open_steps.extend(foldable_steps(w));
+            }
+        }
+    }
+
     fn has_jobs(&self, run_id: u64) -> bool {
         self.snapshot.iter().flat_map(|s| &s.repos).any(|repo| {
             repo.workflows
@@ -461,6 +619,25 @@ impl App {
                 .is_ok_and(|wfs| wfs.iter().any(|w| w.run_id == run_id && w.jobs.is_some()))
         })
     }
+}
+
+/// The workflows of a repo, or none when it failed to load.
+fn workflows(repo: &RepoView) -> impl Iterator<Item = &WorkflowView> {
+    repo.workflows.iter().flatten()
+}
+
+/// Steps of a workflow that can show a log (run, job index, step number).
+fn foldable_steps(w: &WorkflowView) -> impl Iterator<Item = (u64, usize, u32)> + '_ {
+    let jobs = match &w.jobs {
+        Some(Ok(jobs)) => jobs.as_slice(),
+        _ => &[],
+    };
+    jobs.iter().enumerate().flat_map(move |(j, job)| {
+        job.steps
+            .iter()
+            .filter(|s| !matches!(s.status, Status::Queued | Status::Skipped))
+            .map(move |s| (w.run_id, j, s.number))
+    })
 }
 
 pub async fn run(config: Config, client: Client) -> Result<()> {
@@ -520,6 +697,7 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         started: Instant::now(),
         details: false,
         list_area: Rect::default(),
+        open_steps_when_loaded: HashSet::new(),
     };
 
     let mut terminal = ratatui::init();
@@ -583,6 +761,7 @@ fn ui_loop(
                 }
             }
             app.snapshot = Some(snap);
+            app.open_loaded_steps();
             app.loading = false;
             app.last_refresh = Some(Instant::now());
             app.refetch_live_logs();
@@ -700,17 +879,14 @@ fn ui_loop(
                 }
             }
             KeyCode::Char('a') => {
-                app.expand.all = !app.expand.all;
-                app.folds.collapsed_workflows.clear();
-                app.message = Some(
-                    if app.expand.all {
-                        "expanding all workflows"
-                    } else {
-                        "expanding only active/failed"
-                    }
-                    .into(),
-                );
-                request_refresh(app);
+                if app.toggle_all() {
+                    request_refresh(app);
+                }
+            }
+            KeyCode::Char('A') => {
+                if app.toggle_subtree() {
+                    request_refresh(app);
+                }
             }
             KeyCode::Char('r') => request_refresh(app),
             KeyCode::Char('d') => app.details = !app.details,
@@ -785,6 +961,7 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
             ("d", "details"),
             ("t", "theme"),
             ("a", "all"),
+            ("A", "item"),
             ("r", "refresh"),
             ("o", "open"),
             ("q", "quit"),
@@ -1368,6 +1545,7 @@ mod tests {
             started: Instant::now(),
             details: false,
             list_area: Rect::default(),
+            open_steps_when_loaded: HashSet::new(),
         };
         app.rebuild();
         app.list.select(Some(3));
@@ -1414,6 +1592,98 @@ mod tests {
         app.filter_text.clear();
         app.rebuild();
         assert_eq!(app.rows.len(), all);
+    }
+
+    fn select_key(app: &mut App, key: RowKey) {
+        let i = app.rows.iter().position(|r| r.key == key).unwrap();
+        app.list.select(Some(i));
+    }
+
+    #[test]
+    fn a_closes_everything_then_opens_everything() {
+        let mut app = demo_app("noite");
+        assert!(app.rows.iter().any(|r| r.depth > 0));
+        assert!(!app.toggle_all());
+        assert!(app.rows.iter().all(|r| r.depth == 0), "everything closed");
+        assert!(!app.expand.all);
+
+        assert!(app.toggle_all(), "opening fetches the quiet workflows");
+        assert!(app.expand.all);
+        // The calm repos are open too: engine's Release shows.
+        assert!(app.rows.iter().any(|r| r.key == RowKey::Workflow(6)));
+        assert!(app.rows.iter().any(|r| r.key == RowKey::Job(2, 1)));
+    }
+
+    #[test]
+    fn shift_a_toggles_a_row_and_everything_under_it() {
+        let mut app = demo_app("noite");
+
+        // A job: opens every step that has a log, then closes them.
+        select_key(&mut app, RowKey::Job(3, 0));
+        assert!(!app.toggle_subtree());
+        assert!(app.folds.open_steps.contains(&(3, 0, 1)));
+        assert!(app.folds.open_steps.contains(&(3, 0, 2)));
+        assert!(
+            !app.folds.open_steps.contains(&(3, 0, 3)),
+            "skipped step has no log"
+        );
+        assert!(matches!(
+            app.selected().map(|r| &r.key),
+            Some(RowKey::Job(3, 0))
+        ));
+        app.toggle_subtree();
+        assert!(!app.folds.open_steps.iter().any(|s| s.0 == 3));
+
+        // A workflow with jobs: closes, then opens with all its steps.
+        select_key(&mut app, RowKey::Workflow(2));
+        app.toggle_subtree();
+        assert!(!app.rows.iter().any(|r| r.key == RowKey::Job(2, 0)));
+        app.toggle_subtree();
+        assert!(app.rows.iter().any(|r| r.key == RowKey::Job(2, 1)));
+        assert!(app.folds.open_steps.contains(&(2, 1, 2)));
+        assert!(!app.folds.open_steps.contains(&(2, 1, 3)), "queued step");
+
+        // The group: closes, then opens every repo, fetching quiet workflows
+        // and opening their steps once the jobs arrive.
+        select_key(&mut app, RowKey::Group("brabo".into()));
+        assert!(!app.toggle_subtree());
+        let g = app.list.selected().unwrap();
+        assert!(
+            app.rows.get(g + 1).is_none_or(|r| r.depth == 0),
+            "group folded"
+        );
+        assert!(app.toggle_subtree());
+        assert!(app.expand.pinned.contains(&6));
+        assert!(app.rows.iter().any(|r| r.key == RowKey::Workflow(6)));
+        let snap = app.snapshot.as_mut().unwrap();
+        let engine = snap
+            .repos
+            .iter_mut()
+            .find(|r| r.name == "brabo-engine")
+            .unwrap();
+        let release = engine
+            .workflows
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|w| w.run_id == 6)
+            .unwrap();
+        release.jobs = Some(Ok(vec![crate::snapshot::JobView {
+            id: 60,
+            name: "publish".into(),
+            status: Status::Success,
+            url: None,
+            steps: vec![crate::snapshot::StepView {
+                number: 1,
+                name: "Publish".into(),
+                status: Status::Success,
+                started_at: None,
+                completed_at: None,
+            }],
+        }]));
+        app.open_loaded_steps();
+        assert!(app.folds.open_steps.contains(&(6, 0, 1)));
+        assert!(!app.open_steps_when_loaded.contains(&6));
     }
 
     #[test]
