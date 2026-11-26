@@ -61,9 +61,46 @@ pub fn rows(rows: &[Row], look: &Look, width: u16) -> Vec<Line<'static>> {
             (RowKey::Group(_), Some(health)) => {
                 group_line(row, health, look, name_w, bar_w, width as usize)
             }
+            (RowKey::Log(..), _) => log_row(row, &prefix, look, width as usize),
             _ => row_line(row, &prefix, look, name_w, bar_w),
         })
         .collect()
+}
+
+/// A line of an open step's log under the step: tree prefix, a `│` gutter
+/// in `line`, then the log text with its marker glyph. `is_error` marks the
+/// "loading" / "cannot load" placeholder; `detail` holds a key hint.
+fn log_row(row: &Row, prefix: &str, look: &Look, width: usize) -> Line<'static> {
+    let t = look.theme;
+    let mut spans = vec![
+        Span::styled(prefix.to_owned(), look.fg(t.faint)),
+        Span::styled("│ ", look.fg(t.line)),
+    ];
+    if let Some(hint) = &row.detail {
+        spans.push(Span::styled(row.text.clone(), look.fg(t.muted)));
+        spans.push(Span::styled("  ", Style::new()));
+        spans.push(Span::styled(
+            "l",
+            look.fg(t.accent).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!(" {hint}"), look.fg(t.muted)));
+        return Line::from(spans);
+    }
+    let (mark, text, style) = log_marker(&row.text, t);
+    let style = if row.is_error {
+        look.fg(t.muted)
+    } else {
+        style
+    };
+    if let Some((glyph, s)) = mark {
+        spans.push(Span::styled(format!("{glyph} "), s));
+    }
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    spans.push(Span::styled(
+        cut(&text, width.saturating_sub(used + 1).max(4)),
+        style,
+    ));
+    Line::from(spans)
 }
 
 /// `├─ │ └─` prefixes, from which rows have a later sibling.
@@ -78,9 +115,14 @@ fn tree_prefixes(rows: &[Row]) -> Vec<String> {
         seen[d + 1..].iter_mut().for_each(|s| *s = false);
     }
     let mut open = [false; MAX];
+    let mut step_prefix = String::new();
     rows.iter()
         .enumerate()
         .map(|(i, row)| {
+            // Log lines hang under their step's glyph, with no connectors.
+            if matches!(row.key, RowKey::Log(..)) {
+                return format!("{step_prefix}  ");
+            }
             let d = (row.depth as usize).min(MAX - 1);
             open[d] = next_sibling[i];
             if d == 0 {
@@ -92,6 +134,7 @@ fn tree_prefixes(rows: &[Row]) -> Vec<String> {
             }
             if matches!(row.key, RowKey::Step(..)) {
                 p.push_str("    ");
+                step_prefix.clone_from(&p);
             } else {
                 p.push_str(if next_sibling[i] {
                     "├─ "
@@ -139,7 +182,13 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
             }
         }
         RowKey::Step(..) => {
-            left.push(Span::styled(prefix.to_owned(), look.fg(t.faint)));
+            // The last two cells of the indent carry the fold mark, so steps
+            // with and without a log stay aligned.
+            let prefix = match fold(row) {
+                "" => prefix.to_owned(),
+                mark => format!("{}{mark}", &prefix[..prefix.len().saturating_sub(2)]),
+            };
+            left.push(Span::styled(prefix, look.fg(t.faint)));
             if let Some(s) = row.status {
                 left.push(look.glyph(s, false));
                 name_style = match s {
@@ -152,6 +201,7 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
                 left.push(Span::styled(format!("{d} "), look.fg(t.faint)));
             }
         }
+        RowKey::Log(..) => {}
         RowKey::Note(..) => {
             left.push(Span::styled(prefix.to_owned(), look.fg(t.faint)));
             name_style = if row.is_error {
@@ -506,6 +556,58 @@ pub fn hints(keys: &[(&str, &str)], look: &Look) -> Vec<Span<'static>> {
         out.push(Span::styled(format!(" {action}   "), look.fg(t.muted)));
     }
     out
+}
+
+pub type Mark = Option<(&'static str, Style)>;
+
+/// Glyph, text and style for a log line: GitHub's `##[error]`, `##[warning]`,
+/// `##[group]`, `##[command]`… markers become glyphs.
+pub fn log_marker(line: &str, theme: &Theme) -> (Mark, String, Style) {
+    let bold = Modifier::BOLD;
+    let rules: [(&str, Mark, Style); 7] = [
+        (
+            "##[error]",
+            Some(("✗", Style::new().fg(theme.failure).add_modifier(bold))),
+            Style::new().fg(theme.failure),
+        ),
+        (
+            "##[warning]",
+            Some(("!", Style::new().fg(theme.ink).add_modifier(bold))),
+            Style::new().fg(theme.ink),
+        ),
+        (
+            "##[notice]",
+            Some(("i", Style::new().fg(theme.accent))),
+            Style::new().fg(theme.ink),
+        ),
+        (
+            "##[group]",
+            Some(("▾", Style::new().fg(theme.muted))),
+            Style::new().fg(theme.ink).add_modifier(bold),
+        ),
+        ("##[endgroup]", None, Style::new().fg(theme.faint)),
+        (
+            "##[command]",
+            Some(("$", Style::new().fg(theme.accent).add_modifier(bold))),
+            Style::new().fg(theme.ink).add_modifier(bold),
+        ),
+        ("##[debug]", None, Style::new().fg(theme.muted)),
+    ];
+    for (prefix, mark, style) in rules {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return (mark, rest.to_owned(), style);
+        }
+    }
+    // Plain lines that say something failed read in the failure color.
+    let failed = line.contains("FAILED")
+        || line.contains("panicked at")
+        || line.trim_start().starts_with("error");
+    let style = if failed {
+        Style::new().fg(theme.failure)
+    } else {
+        Style::new().fg(theme.ink)
+    };
+    (None, line.to_owned(), style)
 }
 
 #[cfg(test)]
