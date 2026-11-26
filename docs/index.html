@@ -226,7 +226,7 @@
     </div>
     <div class="install-line">
       <span class="p">$</span>
-      <code id="one-liner">curl -sSL https://github.com/viralabs-dev/popier/releases/latest/download/popier-x86_64-unknown-linux-musl.tar.gz | tar xz</code>
+      <code id="one-liner">curl -fsSL https://viralabs-dev.github.io/popier/install.sh | sh</code>
       <button class="copy" data-copy="one-liner">copy</button>
     </div>
     <div class="legend">
@@ -365,15 +365,14 @@ branch = "main"   # optional</code></pre>
     <h2>Up and running in three commands</h2>
     <p class="sub">Linux x86_64. Static musl build runs on any distro; or build it from source with Rust 1.85+.</p>
     <div class="steps" style="text-align:left">
-      <div class="step"><h3>Get the binary</h3><p>Prebuilt and static, from the latest release.</p>
-        <pre><code>curl -sSL https://github.com/viralabs-dev/popier/releases/latest/download/popier-x86_64-unknown-linux-musl.tar.gz | tar xz
-install -m 755 popier ~/.local/bin/</code></pre></div>
+      <div class="step"><h3>Install</h3><p>Downloads the static binary from the latest release, checks its SHA-256 and puts it in <code>~/.local/bin</code>.</p>
+        <pre><code>curl -fsSL https://viralabs-dev.github.io/popier/install.sh | sh</code></pre></div>
       <div class="step"><h3>Find your repos</h3><p>Uses your <code>gh</code> login. Groups projects for you.</p>
         <pre><code>popier init --discover</code></pre></div>
       <div class="step"><h3>Watch</h3><p>Or <code>popier once</code> to print the tree and exit.</p>
         <pre><code>popier</code></pre></div>
     </div>
-    <p class="hint" style="margin-top:22px">from source: <code>cargo install --git https://github.com/viralabs-dev/popier</code></p>
+    <p class="hint" style="margin-top:22px">read it first: <a href="install.sh">install.sh</a> · another folder: <code>POPIER_INSTALL_DIR=/usr/local/bin</code> · from source: <code>cargo install --git https://github.com/viralabs-dev/popier</code></p>
     <div class="ctas" style="margin-top:30px">
       <a class="btn primary" href="https://github.com/viralabs-dev/popier/releases/latest">Download the latest release</a>
       <a class="btn" href="https://github.com/viralabs-dev/popier#readme">Read the docs</a>
