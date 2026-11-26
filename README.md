@@ -1,5 +1,7 @@
 # popier
 
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white&style=flat-square)](https://ko-fi.com/daneiel)
+
 Watch the GitHub Actions pipelines of many repositories on one screen, with
 every **workflow → job → step** laid out as a tree.
 
@@ -214,6 +216,10 @@ Architecture notes live in [`docs/architecture.md`](docs/architecture.md).
 
 Push a tag `vX.Y.Z` matching the version in `Cargo.toml`; the release workflow
 builds the Linux binaries (glibc and static musl) and attaches them to a GitHub release.
+
+## Support
+
+If popier helps you, you can [buy me a coffee on Ko-fi](https://ko-fi.com/daneiel).
 
 ## License
 
