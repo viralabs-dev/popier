@@ -154,6 +154,7 @@ order: `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token`. If you already use the
 popier               # interactive dashboard
 popier once          # print the tree once and exit
 popier once --all    # expand every workflow
+popier once --logs   # then the last 30 lines of every failing step (--log-lines N)
 popier -c other.toml # use another config file
 ```
 
