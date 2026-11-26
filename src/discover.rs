@@ -36,12 +36,9 @@ pub struct Report {
 
 /// Lists the user's repositories, keeping only `owners` when it is not empty.
 pub async fn discover(client: &Client, owners: &[String]) -> Result<Report> {
-    let repos = client.list_user_repos().await?;
-    let mut report = Report {
-        seen: repos.len(),
-        ..Report::default()
-    };
-    let wanted: Vec<RepoDto> = repos
+    let repos: Vec<RepoDto> = client
+        .list_user_repos()
+        .await?
         .into_iter()
         .filter(|r| {
             owners.is_empty()
@@ -49,6 +46,14 @@ pub async fn discover(client: &Client, owners: &[String]) -> Result<Report> {
                     .iter()
                     .any(|o| o.eq_ignore_ascii_case(&r.owner.login))
         })
+        .collect();
+    // Counted after the owner filter, so `--owner x` reports x's repos only.
+    let mut report = Report {
+        seen: repos.len(),
+        ..Report::default()
+    };
+    let wanted: Vec<RepoDto> = repos
+        .into_iter()
         .filter(|r| {
             let keep = !r.archived && !r.fork && !r.disabled;
             if !keep {
