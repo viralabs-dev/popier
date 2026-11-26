@@ -6,8 +6,13 @@
 //! alone leak lines between steps. Each step that runs a command or action
 //! opens its output with a `##[group]Run …` line: those markers are matched
 //! to the steps in order (the first marker at or after each step's start), and
-//! a step's lines run from its marker to the next step's marker. Times are
-//! only the fallback when a step has no marker.
+//! a step's lines run from its marker to the next step's marker.
+//!
+//! The runner's own steps have no marker. "Set up job" is everything before
+//! the first marker. Each post step (`Post Run actions/checkout@v4`) opens
+//! with its own `Post job cleanup.` line, in the order the steps are listed,
+//! and "Complete job" starts at `Cleaning up orphan processes`. Times are
+//! only the fallback when a step can't be placed this way.
 
 /// Most recent lines shown for a step.
 pub const STEP_TAIL: usize = 200;
@@ -26,6 +31,7 @@ pub struct StepSpan {
 const MARKER: &str = "##[group]Run ";
 const MARKER_TEXT: &str = "Run ";
 const POST_JOB: &str = "Post job cleanup.";
+const COMPLETE_JOB: &str = "Cleaning up orphan processes";
 
 /// `2026-11-25T22:19:44` part of a timestamped log line, if it has one.
 fn line_second(line: &str) -> Option<&str> {
@@ -75,6 +81,15 @@ pub fn slice_step(
 pub fn cut_step(log: &str, steps: &[StepSpan], number: u32) -> Option<Vec<String>> {
     let lines: Vec<&str> = log.lines().collect();
     let markers = top_level_markers(&lines);
+    let index = steps.iter().position(|s| s.number == number)?;
+    if let Some(range) = runner_step(&lines, &markers, steps, index) {
+        return Some(
+            lines[range]
+                .iter()
+                .map(|l| strip_timestamp(l).to_owned())
+                .collect(),
+        );
+    }
 
     // Assign markers to steps in order. A step named "Run …" takes the first
     // unused marker with the same text; any other step takes the first unused
@@ -130,6 +145,56 @@ pub fn cut_step(log: &str, steps: &[StepSpan], number: u32) -> Option<Vec<String
             .map(|l| strip_timestamp(l).to_owned())
             .collect(),
     )
+}
+
+/// Line range of a step the runner adds around the job's own steps: "Set up
+/// job", a post step or "Complete job". `None` for any other step, or when
+/// the log doesn't have the expected shape.
+fn runner_step(
+    lines: &[&str],
+    markers: &[Marker],
+    steps: &[StepSpan],
+    index: usize,
+) -> Option<std::ops::Range<usize>> {
+    let step = &steps[index];
+    let starts = |i: usize, text: &str| strip_timestamp(lines[i]).starts_with(text);
+    let post_lines: Vec<usize> = (0..lines.len()).filter(|&i| starts(i, POST_JOB)).collect();
+    let complete = (0..lines.len()).find(|&i| starts(i, COMPLETE_JOB));
+    let after_posts = complete.unwrap_or(lines.len());
+
+    if index == 0 && step.name == "Set up job" {
+        let end = markers
+            .first()
+            .map(|m| m.line)
+            .into_iter()
+            .chain(post_lines.first().copied())
+            .chain(complete)
+            .min()
+            .unwrap_or(lines.len());
+        return (end > 0).then_some(0..end);
+    }
+    if step.name == "Complete job" {
+        return complete.map(|c| c..lines.len());
+    }
+    if step.name.starts_with("Post ") && !step.skipped {
+        // Post steps that ran, in order, each opening with "Post job cleanup.".
+        let posts: Vec<u32> = steps
+            .iter()
+            .filter(|s| s.name.starts_with("Post ") && !s.skipped)
+            .map(|s| s.number)
+            .collect();
+        let post_lines: Vec<usize> = post_lines
+            .into_iter()
+            .filter(|&l| l < after_posts)
+            .collect();
+        if posts.len() != post_lines.len() {
+            return None;
+        }
+        let k = posts.iter().position(|&n| n == step.number)?;
+        let end = post_lines.get(k + 1).copied().unwrap_or(after_posts);
+        return Some(post_lines[k]..end);
+    }
+    None
 }
 
 struct Marker<'a> {
@@ -301,11 +366,22 @@ continuation without stamp
     }
 
     #[test]
-    fn steps_without_marker_are_not_found() {
+    fn runner_steps_are_cut_by_their_own_lines() {
         let steps = neighbour_steps();
-        assert!(cut_step(NEIGHBOURS, &steps, 1).is_none());
+        assert_eq!(
+            cut_step(NEIGHBOURS, &steps, 1).unwrap(),
+            vec![
+                "Current runner version: '2.338.2'",
+                "##[group]Runner Image Provisioner",
+                "##[endgroup]"
+            ]
+        );
+        // A skipped step without a name prints nothing and isn't found.
         assert!(cut_step(NEIGHBOURS, &steps, 5).is_none());
-        assert!(cut_step(NEIGHBOURS, &steps, 6).is_none());
+        assert_eq!(
+            cut_step(NEIGHBOURS, &steps, 6).unwrap(),
+            vec!["Cleaning up orphan processes"]
+        );
     }
 
     // Shape of a real job (brabo, 25/11): "Set up job" ends in the same second
@@ -342,7 +418,8 @@ continuation without stamp
     #[test]
     fn set_up_job_does_not_steal_the_next_marker() {
         let steps = real_steps();
-        assert!(cut_step(REAL_SHAPE, &steps, 1).is_none());
+        let setup = cut_step(REAL_SHAPE, &steps, 1).unwrap();
+        assert_eq!(setup.last().unwrap(), "Complete job name: Drift");
         assert_eq!(
             cut_step(REAL_SHAPE, &steps, 2).unwrap(),
             vec!["##[group]Run actions/checkout@v4", "checked out"]
@@ -382,6 +459,72 @@ continuation without stamp
             "Run pnpm test:scripts"
         ));
         assert!(!same_command("Run pnpm lint", "Run pnpm build"));
+    }
+
+    // Tail of a real job (popier CI, 26/11): two post steps, each opening
+    // with "Post job cleanup.", then the runner's own cleanup.
+    const POST_LOG: &str = "\
+2026-11-25T03:52:00.04Z Current runner version: '2.330.0'
+2026-11-25T03:52:00.04Z ##[group]Runner Image
+2026-11-25T03:52:00.04Z Image: ubuntu-24.04
+2026-11-25T03:52:00.04Z ##[endgroup]
+2026-11-25T03:52:01.04Z Complete job name: check
+2026-11-25T03:52:01.09Z ##[group]Run actions/checkout@v4
+2026-11-25T03:52:01.09Z with:
+2026-11-25T03:52:29.59Z ##[group]Run cargo test
+2026-11-25T03:52:37.41Z test result: ok.
+2026-11-25T03:52:37.42Z Post job cleanup.
+2026-11-25T03:52:37.51Z Cache up-to-date.
+2026-11-25T03:52:37.52Z Post job cleanup.
+2026-11-25T03:52:37.60Z [command]/usr/bin/git version
+2026-11-25T03:52:37.77Z Cleaning up orphan processes
+2026-11-25T03:52:37.79Z ##[warning]Node.js 20 is deprecated.";
+
+    fn post_steps() -> Vec<StepSpan> {
+        vec![
+            named(1, "Set up job", "03:52:00", "03:52:01"),
+            named(2, "Run actions/checkout@v4", "03:52:01", "03:52:01"),
+            named(7, "Test", "03:52:29", "03:52:37"),
+            named(
+                13,
+                "Post Run Swatinem/rust-cache@v2",
+                "03:52:37",
+                "03:52:37",
+            ),
+            named(14, "Post Run actions/checkout@v4", "03:52:37", "03:52:37"),
+            named(15, "Complete job", "03:52:37", "03:52:37"),
+        ]
+    }
+
+    #[test]
+    fn set_up_job_is_everything_before_the_first_marker() {
+        let lines = cut_step(POST_LOG, &post_steps(), 1).unwrap();
+        assert_eq!(lines.first().unwrap(), "Current runner version: '2.330.0'");
+        assert_eq!(lines.last().unwrap(), "Complete job name: check");
+    }
+
+    #[test]
+    fn each_post_step_gets_its_own_cleanup() {
+        let cache = cut_step(POST_LOG, &post_steps(), 13).unwrap();
+        assert_eq!(cache, vec!["Post job cleanup.", "Cache up-to-date."]);
+        let checkout = cut_step(POST_LOG, &post_steps(), 14).unwrap();
+        assert_eq!(
+            checkout,
+            vec!["Post job cleanup.", "[command]/usr/bin/git version"]
+        );
+        let complete = cut_step(POST_LOG, &post_steps(), 15).unwrap();
+        assert_eq!(complete[0], "Cleaning up orphan processes");
+        assert_eq!(complete.len(), 2);
+        // The last job step still stops before the post section.
+        let test = cut_step(POST_LOG, &post_steps(), 7).unwrap();
+        assert_eq!(test.last().unwrap(), "test result: ok.");
+    }
+
+    #[test]
+    fn post_steps_fall_back_when_counts_differ() {
+        let mut steps = post_steps();
+        steps.insert(5, named(16, "Post Run extra@v1", "03:52:37", "03:52:37"));
+        assert_eq!(cut_step(POST_LOG, &steps, 13), None);
     }
 
     #[test]
