@@ -1,25 +1,69 @@
-# popier
+<div align="center">
 
+# ◆ popier
+
+**Every GitHub Actions pipeline you care about, live, on one terminal screen.**
+
+Many repos, one tree: **repo → workflow → job → step**, with progress bars,
+failing steps called out, logs one key away, and a desktop ping when `main` breaks.
+
+[![CI](https://img.shields.io/github/actions/workflow/status/viralabs-dev/popier/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/viralabs-dev/popier/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/viralabs-dev/popier?style=flat-square&color=informational)](https://github.com/viralabs-dev/popier/releases/latest)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square)](#license)
+[![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white&style=flat-square)](https://www.rust-lang.org)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white&style=flat-square)](#install)
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white&style=flat-square)](https://ko-fi.com/daneiel)
 
-Watch the GitHub Actions pipelines of many repositories on one screen, with
-every **workflow → job → step** laid out as a tree.
+<img src="docs/assets/dashboard.png" alt="popier dashboard: a project group with 6 repos, one failing test step highlighted in red, a deploy running at 60%, a queued CI, and three green repos folded into one line" width="100%" />
 
+</div>
+
+## Why popier
+
+Opening a browser tab per repo to find out *which* pipeline broke, *where*,
+and *whether* the fix is still running gets old fast, especially for a
+project spread over many repositories. popier keeps all of it in one live view.
+
+- **One tree for everything.** The latest run of every workflow in every repo,
+  down to each job and step, refreshed every minute.
+- **Problems surface first.** Failed, running and queued pipelines open by
+  themselves; green ones stay folded and quiet. The failing step is named right
+  on the workflow line: `test › 2. Run tests`.
+- **Projects, not just repos.** Group a multi-repo project into one row with
+  a health bar (`✗ 1 ● 1 ○ 1 ✓ 3`) and the reasons it needs you.
+- **Logs without leaving the terminal.** `l` shows just the failing step's
+  output, cut from the job log; `Enter` on a step previews its last lines inline.
+- **Zero setup with `gh`.** `popier init --discover` finds your repos and
+  writes the config, grouping `brabo`, `brabo-api`, `brabo-web`… automatically.
+- **Desktop notifications** when a workflow starts failing, and when it recovers.
+- **Five themes**, from dark to light to high contrast, or your terminal's own colors.
+- **Light on the API.** ETag caching means unchanged data doesn't count against
+  your rate limit. Single static binary, no runtime.
+
+## Quick start
+
+```sh
+# 1. get the static Linux binary
+curl -sSL https://github.com/viralabs-dev/popier/releases/latest/download/popier-x86_64-unknown-linux-musl.tar.gz | tar xz
+install -m 755 popier ~/.local/bin/
+
+# 2. let it find your repos (uses your `gh` login)
+popier init --discover
+
+# 3. watch
+popier
 ```
-▾ acme/api
-  ▾ ✗ CI (main)
-        ✗ test
-            ✓ 1. Set up job
-            ✓ 2. Checkout
-            ✗ 3. Run tests
-  ▸ ✓ Release (main)
-▾ acme/web
-  ▾ ● Deploy (main)
-        ● deploy
-            ✓ 1. Set up job
-            ● 2. Build
-            ○ 3. Upload
-```
+
+<table>
+<tr>
+<td width="50%"><img src="docs/assets/details.png" alt="Details sidebar for a failed job, showing its progress and every step with its duration" /></td>
+<td width="50%"><img src="docs/assets/log.png" alt="Log panel showing only the failing step's output, with the error lines in red" /></td>
+</tr>
+<tr>
+<td align="center"><b>Details sidebar</b> (<code>d</code>): everything about the selected row</td>
+<td align="center"><b>Step log</b> (<code>l</code>): only the step that failed, errors highlighted</td>
+</tr>
+</table>
 
 `✓` success · `●` running · `○` queued · `✗` failed · `–` skipped · `⊘` cancelled
 
@@ -132,6 +176,8 @@ popier -c other.toml # use another config file
 
 ## Look and themes
 
+<img src="docs/assets/themes.png" alt="The same dashboard in the brasa, papel and alto-contraste themes" width="100%" />
+
 Each workflow and job shows a progress bar (finished steps out of all steps),
 the percent, the `done/total` count and how long it has run. A repo line, open
 or folded, sums up its most urgent pipeline (failed, then running, then
@@ -217,9 +263,14 @@ Architecture notes live in [`docs/architecture.md`](docs/architecture.md).
 Push a tag `vX.Y.Z` matching the version in `Cargo.toml`; the release workflow
 builds the Linux binaries (glibc and static musl) and attaches them to a GitHub release.
 
+## Contributing
+
+Issues and pull requests are welcome. Run the checks in [Development](#development)
+before opening a PR; CI runs the same ones.
+
 ## Support
 
-If popier helps you, you can [buy me a coffee on Ko-fi](https://ko-fi.com/daneiel).
+If popier saves you a few browser tabs, you can [buy me a coffee on Ko-fi](https://ko-fi.com/daneiel).
 
 ## License
 
