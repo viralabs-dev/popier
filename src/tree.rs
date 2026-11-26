@@ -469,7 +469,62 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, name: &str, folds: &Folds, no
     }
 }
 
-fn note(slug: &str, idx: usize, text: String, is_error: bool) -> Row {
+/// Keeps the rows whose name or branch contains `query` (lowercase), with
+/// everything under them and the rows above them, so a match is shown in place.
+pub fn search(rows: Vec<Row>, query: &str) -> Vec<Row> {
+    let matches = |row: &Row| {
+        row.text.to_lowercase().contains(query)
+            || row
+                .branch
+                .as_deref()
+                .is_some_and(|b| b.to_lowercase().contains(query))
+    };
+    let mut keep = vec![false; rows.len()];
+    // Down: a match keeps its whole subtree.
+    let mut inside: Option<u8> = None;
+    for (i, row) in rows.iter().enumerate() {
+        if inside.is_some_and(|d| row.depth <= d) {
+            inside = None;
+        }
+        if inside.is_some() {
+            keep[i] = true;
+        } else if matches(row) {
+            keep[i] = true;
+            inside = Some(row.depth);
+        }
+    }
+    // Up: the nearest shallower row above a kept row is its parent.
+    // `need`: depth of the last kept row seen; 0 means none (nothing is above depth 0).
+    let mut need = 0;
+    for (i, row) in rows.iter().enumerate().rev() {
+        if row.depth < need {
+            keep[i] = true;
+        }
+        if keep[i] {
+            need = row.depth;
+        }
+    }
+    rows.into_iter()
+        .zip(keep)
+        .filter_map(|(row, keep)| keep.then_some(row))
+        .collect()
+}
+
+/// Folds for a search: every group, calm line, repo and loaded workflow open,
+/// so matches deep in the tree show; open step logs stay as they were.
+pub fn search_folds(snapshot: &Snapshot, folds: &Folds) -> Folds {
+    Folds {
+        open_calm: snapshot
+            .repos
+            .iter()
+            .filter_map(|r| r.group.clone())
+            .collect(),
+        open_steps: folds.open_steps.clone(),
+        ..Folds::default()
+    }
+}
+
+pub fn note(slug: &str, idx: usize, text: String, is_error: bool) -> Row {
     Row {
         key: RowKey::Note(slug.to_owned(), idx),
         depth: 1,
@@ -1016,5 +1071,63 @@ mod tests {
         assert_eq!(branch, None);
         assert_eq!(gauge.elapsed, Some(Elapsed::Ago(720)));
         assert_eq!(gauge.fraction(), Some(1.0));
+    }
+    #[test]
+    fn search_keeps_matches_with_parents_and_children() {
+        let rows = build(&sample(), &Folds::default());
+        let keys = |rows: &[Row]| rows.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+
+        // A step name: its job, workflow and repo stay above it.
+        let found = search(rows.clone(), "run tests");
+        assert_eq!(
+            keys(&found),
+            vec![
+                RowKey::Repo("o/api".into()),
+                RowKey::Workflow(1),
+                RowKey::Job(1, 0),
+                RowKey::Step(1, 0, 1),
+            ]
+        );
+
+        // A workflow name keeps only that workflow, not its sibling.
+        let found = search(rows.clone(), "lint");
+        assert_eq!(
+            keys(&found),
+            vec![RowKey::Repo("o/api".into()), RowKey::Workflow(2)]
+        );
+
+        // A repo name keeps everything under it.
+        let found = search(rows.clone(), "web");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].key, RowKey::Repo("o/web".into()));
+
+        // A branch matches its workflow.
+        let found = search(rows.clone(), "mai");
+        assert_eq!(found[1].key, RowKey::Workflow(1));
+
+        // Two matches in different repos each keep their own parents.
+        let found = search(rows.clone(), "test");
+        assert!(found.iter().any(|r| r.key == RowKey::Step(1, 0, 1)));
+        assert_eq!(found[0].key, RowKey::Repo("o/api".into()));
+
+        assert!(search(rows, "nothing like this").is_empty());
+    }
+
+    #[test]
+    fn search_opens_folded_parents() {
+        let mut snap = sample();
+        for repo in &mut snap.repos {
+            repo.group = Some("proj".into());
+        }
+        let mut folds = Folds::default();
+        folds.collapsed_groups.insert("proj".into());
+        folds.collapsed_repos.insert("o/api".into());
+        let rows = build(&snap, &search_folds(&snap, &folds));
+        let found = search(rows, "run tests");
+        assert_eq!(
+            found.first().map(|r| &r.key),
+            Some(&RowKey::Group("proj".into()))
+        );
+        assert_eq!(found.last().map(|r| &r.key), Some(&RowKey::Step(1, 0, 1)));
     }
 }

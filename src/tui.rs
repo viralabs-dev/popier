@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::config::Config;
 use crate::detail;
-use crate::filter::RunFilter;
+use crate::filter::{self, RunFilter};
 use crate::github::Client;
 use crate::logs;
 use crate::notify;
@@ -137,11 +137,24 @@ impl App {
             .selected()
             .and_then(|i| self.rows.get(i))
             .map(|r| r.key.clone());
-        self.rows = self
-            .snapshot
-            .as_ref()
-            .map(|s| tree::build(s, &self.folds))
-            .unwrap_or_default();
+        let search = filter::search_text(&self.filter_text);
+        self.rows = match (self.snapshot.as_ref(), &search) {
+            (None, _) => Vec::new(),
+            (Some(s), None) => tree::build(s, &self.folds),
+            (Some(s), Some(query)) => {
+                let rows = tree::search(tree::build(s, &tree::search_folds(s, &self.folds)), query);
+                if rows.is_empty() {
+                    vec![tree::note(
+                        "",
+                        0,
+                        format!("nothing matches \"{query}\""),
+                        false,
+                    )]
+                } else {
+                    rows
+                }
+            }
+        };
         self.add_log_rows();
         self.repo_rows = self
             .snapshot
@@ -539,20 +552,21 @@ fn ui_loop(
         let _ = refresh_tx.send(());
     };
 
-    // Applies `text` as the run filter. Notifications pause while a filter is
+    // Applies `text` as the filter: a search narrows the tree at once; a
+    // `#PR` filter refetches runs. Notifications pause while a PR filter is
     // on (the filtered view is not the real "latest run" of each workflow) and
     // resume silently when it is cleared.
     let apply_filter = |app: &mut App, text: &str| {
-        let filter = RunFilter::parse(text);
-        if filter == app.expand.filter {
-            return;
-        }
         app.filter_text = text.trim().to_owned();
-        app.expand.filter = filter;
-        if let Some(watcher) = app.watcher.as_mut() {
-            watcher.reset();
+        let filter = RunFilter::parse(text);
+        if filter != app.expand.filter {
+            app.expand.filter = filter;
+            if let Some(watcher) = app.watcher.as_mut() {
+                watcher.reset();
+            }
+            request_refresh(app);
         }
-        request_refresh(app);
+        app.rebuild();
     };
 
     let (log_tx, mut log_rx) = mpsc::unbounded_channel::<(u64, Result<String, String>)>();
@@ -669,7 +683,7 @@ fn ui_loop(
 
         match key.code {
             KeyCode::Char('/') => app.filter_input = Some(app.filter_text.clone()),
-            KeyCode::Esc if app.expand.filter.is_some() => apply_filter(app, ""),
+            KeyCode::Esc if !app.filter_text.is_empty() => apply_filter(app, ""),
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1),
@@ -1377,6 +1391,29 @@ mod tests {
         app.list.select(Some(app.rows.len() - 1));
         app.jump_repo(true);
         assert_eq!(app.list.selected(), Some(first));
+    }
+
+    #[test]
+    fn filter_shows_only_matching_rows() {
+        let mut app = demo_app("noite");
+        let all = app.rows.len();
+        app.filter_text = "Release".into();
+        app.rebuild();
+        // engine sits in the folded calm line; the search still finds it.
+        let keys: Vec<&RowKey> = app.rows.iter().map(|r| &r.key).collect();
+        assert!(keys.contains(&&RowKey::Workflow(6)), "{keys:?}");
+        assert!(keys.contains(&&RowKey::Repo("o/brabo-engine".into())));
+        assert!(!keys.contains(&&RowKey::Repo("o/hud".into())));
+        assert!(app.rows.len() < all);
+
+        app.filter_text = "zzz".into();
+        app.rebuild();
+        assert_eq!(app.rows.len(), 1);
+        assert!(app.rows[0].text.contains("nothing matches"));
+
+        app.filter_text.clear();
+        app.rebuild();
+        assert_eq!(app.rows.len(), all);
     }
 
     #[test]
