@@ -178,7 +178,8 @@ popier -c other.toml # use another config file
 | `Tab` / `Shift+Tab` | next / previous project or repo (wraps around: after the last comes the first) |
 | `/` | search: the tree shows only what matches as you type (names and branches), or `#152` for a PR; `Esc` clears |
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |
-| `a` | toggle expanding every workflow |
+| `a` | open everything, or close everything when anything is open |
+| `A` | open or close the selected row and everything under it, down to the steps' logs |
 | `r` | refresh now |
 | `d` / `→` | open or close the details sidebar on the right (`←` closes it) |
 | mouse | click a row to select it and fold or unfold it; the wheel scrolls (hold `Shift` to select text) |
