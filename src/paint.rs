@@ -46,7 +46,9 @@ pub fn columns(width: u16) -> (usize, usize) {
     match width {
         140.. => (44, 20),
         100.. => (36, 20),
-        80.. => (32, 10),
+        80.. => (36, 10),
+        // Narrow (an upright monitor split in two, say): a short bar still fits.
+        64.. => ((width as usize).saturating_sub(32).min(36), 6),
         w => ((w as usize).saturating_sub(22).max(16), 0),
     }
 }
@@ -64,6 +66,7 @@ pub fn rows(rows: &[Row], look: &Look, width: u16) -> Vec<Line<'static>> {
             (RowKey::Log(..), _) => log_row(row, &prefix, look, width as usize),
             _ => row_line(row, &prefix, look, name_w, bar_w),
         })
+        .map(|line| clip(line, width as usize))
         .collect()
 }
 
@@ -101,6 +104,44 @@ fn log_row(row: &Row, prefix: &str, look: &Look, width: usize) -> Line<'static> 
         style,
     ));
     Line::from(spans)
+}
+
+/// Keeps a line within `width` cells: the span that crosses the edge is cut
+/// with `…` when at least 6 cells of it fit, and dropped otherwise, so a
+/// narrow terminal never shows a stray glyph or two letters of a hint.
+fn clip(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    let mut used = 0;
+    let mut out = Vec::new();
+    for span in line.spans {
+        let w = span.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        let mut room = width - used;
+        let text = if room >= 6 && !span.content.trim().is_empty() {
+            cut(&span.content, room)
+        } else {
+            // A glyph whose text was dropped (`● ` before `web › Deploy`)
+            // goes too.
+            if let Some(last) = out.last_mut()
+                && last.width() <= 2
+                && !last.content.trim().is_empty()
+            {
+                room += last.width();
+                *last = Span::styled("", last.style);
+            }
+            // Blank, keeping the background (group bands run to the edge).
+            " ".repeat(room)
+        };
+        out.push(Span::styled(text, span.style));
+        break;
+    }
+    Line::from(out)
 }
 
 /// `├─ │ └─` prefixes, from which rows have a later sibling.
@@ -558,6 +599,43 @@ pub fn hints(keys: &[(&str, &str)], look: &Look) -> Vec<Span<'static>> {
     out
 }
 
+/// Lays the footer out on up to `max_lines` lines of `width` cells, keeping
+/// each key next to its word: `spans` is what [`hints`] returns (a leading
+/// space, then key and word pairs), maybe followed by single extra spans
+/// (filter tag, message). Pieces that do not fit on the last line are left out.
+pub fn fit_hints(spans: Vec<Span<'static>>, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let mut pieces: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut it = spans.into_iter().peekable();
+    let lead = it.next();
+    while let Some(span) = it.next() {
+        let is_key = span.style.add_modifier.contains(Modifier::BOLD)
+            && !span.content.starts_with(' ')
+            && it.peek().is_some_and(|n| n.content.starts_with(' '));
+        match (is_key, it.peek().is_some()) {
+            (true, true) => pieces.push(vec![span, it.next().expect("peeked")]),
+            _ => pieces.push(vec![span]),
+        }
+    }
+    let mut lines: Vec<Vec<Span<'static>>> = vec![lead.into_iter().collect()];
+    for piece in pieces {
+        let w: usize = piece.iter().map(Span::width).sum();
+        let used: usize = lines
+            .last()
+            .expect("one line")
+            .iter()
+            .map(Span::width)
+            .sum();
+        if used + w > width {
+            if lines.len() == max_lines {
+                continue;
+            }
+            lines.push(vec![Span::raw(" ")]);
+        }
+        lines.last_mut().expect("one line").extend(piece);
+    }
+    lines.into_iter().map(Line::from).collect()
+}
+
 pub type Mark = Option<(&'static str, Style)>;
 
 /// Glyph, text and style for a log line: GitHub's `##[error]`, `##[warning]`,
@@ -613,6 +691,29 @@ pub fn log_marker(line: &str, theme: &Theme) -> (Mark, String, Style) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clip_cuts_or_blanks_what_crosses_the_edge() {
+        let line = Line::from(vec![
+            Span::raw("abcdef"),
+            Span::raw("  test › 3. Run tests"),
+        ]);
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(text(&clip(line.clone(), 30)), "abcdef  test › 3. Run tests");
+        assert_eq!(text(&clip(line.clone(), 14)), "abcdef  test …");
+        assert_eq!(text(&clip(line, 9)), "abcdef   ");
+        let glyph = Line::from(vec![
+            Span::raw("abcdef"),
+            Span::raw("● "),
+            Span::raw("web › Deploy"),
+        ]);
+        assert_eq!(text(&clip(glyph, 10)), "abcdef    ");
+    }
     use crate::tree::{self, Folds};
 
     #[test]
@@ -645,7 +746,9 @@ mod tests {
     fn columns_shrink_with_the_terminal() {
         assert_eq!(columns(160), (44, 20));
         assert_eq!(columns(100), (36, 20));
-        assert_eq!(columns(90), (32, 10));
+        assert_eq!(columns(90), (36, 10));
+        assert_eq!(columns(72), (36, 6));
+        assert_eq!(columns(66), (34, 6));
         assert_eq!(columns(60).1, 0);
     }
 

@@ -756,77 +756,11 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
         Block::new().style(Style::new().bg(theme.bg).fg(theme.ink)),
         area,
     );
-    let [head, _, main, footer] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
-
-    if let Some(view) = app.log_view.as_mut() {
-        let [main, footer] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-        draw_log(frame, view, &look, main, footer);
-        return;
-    }
-
-    let rate = client.rate_limit();
-    let info = paint::HeaderInfo {
-        loading: app.loading,
-        updated_secs: app.last_refresh.map(|at| at.elapsed().as_secs()),
-        rate: rate.remaining.zip(rate.limit),
-    };
-    frame.render_widget(
-        Paragraph::new(paint::header(&app.repo_rows, &info, &look, head.width))
-            .style(Style::new().bg(theme.surface)),
-        head,
-    );
-
-    let (main, side) = match (app.details, detail::panel_width(main.width)) {
-        (false, _) => (main, None),
-        (true, Some(w)) => {
-            let [list, side] =
-                Layout::horizontal([Constraint::Min(1), Constraint::Length(w)]).areas(main);
-            (list, Some(side))
-        }
-        // Too narrow for both: the panel covers the list.
-        (true, None) => (main, Some(main)),
-    };
-    app.list_area = main;
-    let items: Vec<ListItem> = paint::rows(&app.rows, &look, main.width)
-        .into_iter()
-        .map(ListItem::new)
-        .collect();
-    let list = List::new(items).highlight_style(
-        Style::new()
-            .bg(theme.selection)
-            .add_modifier(Modifier::BOLD),
-    );
-    frame.render_stateful_widget(list, main, &mut app.list);
-    if let Some(side) = side {
-        draw_details(frame, app, &look, side);
-    }
-
-    let bar = Style::new().bg(theme.surface_raised);
+    let portrait = detail::portrait(area.width, area.height);
     let tag = Style::new()
         .fg(theme.on_accent)
         .bg(theme.accent)
         .add_modifier(Modifier::BOLD);
-    if let Some(input) = &app.filter_input {
-        let line = Line::from(vec![
-            Span::styled(" filter ", tag),
-            Span::styled(format!(" {input}"), Style::new().fg(theme.ink)),
-            Span::styled("▏", Style::new().fg(theme.accent)),
-            Span::styled(
-                "   branch part or #PR · ⏎ keep · Esc clear",
-                Style::new().fg(theme.muted),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(line).style(bar), footer);
-        return;
-    }
-
     let mut spans = paint::hints(
         &[
             ("↑↓", "move"),
@@ -850,7 +784,86 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
     if let Some(msg) = &app.message {
         spans.push(Span::styled(format!("  {msg}"), Style::new().fg(theme.ink)));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), footer);
+    // On a tall, narrow terminal the hints take two lines instead of being cut.
+    let footer_lines = paint::fit_hints(spans, area.width as usize, if portrait { 2 } else { 1 });
+    let [head, _, main, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(footer_lines.len().max(1) as u16),
+    ])
+    .areas(area);
+
+    if let Some(view) = app.log_view.as_mut() {
+        let [main, footer] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        draw_log(frame, view, &look, main, footer);
+        return;
+    }
+
+    let rate = client.rate_limit();
+    let info = paint::HeaderInfo {
+        loading: app.loading,
+        updated_secs: app.last_refresh.map(|at| at.elapsed().as_secs()),
+        rate: rate.remaining.zip(rate.limit),
+    };
+    frame.render_widget(
+        Paragraph::new(paint::header(&app.repo_rows, &info, &look, head.width))
+            .style(Style::new().bg(theme.surface)),
+        head,
+    );
+
+    let (main, side) = match (app.details, detail::placement(area.width, area.height)) {
+        (false, _) => (main, None),
+        (true, detail::Placement::Right(w)) => {
+            let [list, side] =
+                Layout::horizontal([Constraint::Min(1), Constraint::Length(w)]).areas(main);
+            (list, Some(side))
+        }
+        // A tall, narrow terminal (a monitor turned upright): the panel goes
+        // under the tree, full width.
+        (true, detail::Placement::Below(h)) => {
+            let [list, side] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(h)]).areas(main);
+            (list, Some(side))
+        }
+        // Too small for both: the panel covers the list.
+        (true, detail::Placement::Cover) => (main, Some(main)),
+    };
+    app.list_area = main;
+    let items: Vec<ListItem> = paint::rows(&app.rows, &look, main.width)
+        .into_iter()
+        .map(ListItem::new)
+        .collect();
+    let list = List::new(items).highlight_style(
+        Style::new()
+            .bg(theme.selection)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_stateful_widget(list, main, &mut app.list);
+    if let Some(side) = side {
+        draw_details(frame, app, &look, side);
+    }
+
+    let bar = Style::new().bg(theme.surface_raised);
+    if let Some(input) = &app.filter_input {
+        let line = Line::from(vec![
+            Span::styled(" filter ", tag),
+            Span::styled(format!(" {input}"), Style::new().fg(theme.ink)),
+            Span::styled("▏", Style::new().fg(theme.accent)),
+            Span::styled(
+                "   branch part or #PR · ⏎ keep · Esc clear",
+                Style::new().fg(theme.muted),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line).style(bar), footer);
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(footer_lines).style(Style::new().bg(theme.surface_raised)),
+        footer,
+    );
 }
 
 fn draw_details(frame: &mut ratatui::Frame, app: &mut App, look: &Look, area: Rect) {
@@ -1409,7 +1422,14 @@ mod tests {
             if std::env::var("POPIER_LOG").is_ok() {
                 app.log_view = Some(sample_log());
             }
-            let (w, h) = (140, 26);
+            // POPIER_SIZE=<w>x<h> renders another terminal size (e.g. 90x60).
+            let (w, h) = std::env::var("POPIER_SIZE")
+                .ok()
+                .and_then(|s| {
+                    let (w, h) = s.split_once('x')?;
+                    Some((w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or((140, 26));
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             term.draw(|f| draw(f, &mut app, &client)).unwrap();
             let buf = term.backend().buffer();
