@@ -16,6 +16,7 @@ pub const STEP_TAIL: usize = 200;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepSpan {
     pub number: u32,
+    pub name: String,
     pub started: Option<String>,
     pub completed: Option<String>,
     /// Skipped steps print nothing and must not claim a marker.
@@ -23,6 +24,8 @@ pub struct StepSpan {
 }
 
 const MARKER: &str = "##[group]Run ";
+const MARKER_TEXT: &str = "Run ";
+const POST_JOB: &str = "Post job cleanup.";
 
 /// `2026-11-25T22:19:44` part of a timestamped log line, if it has one.
 fn line_second(line: &str) -> Option<&str> {
@@ -71,62 +74,113 @@ pub fn slice_step(
 /// `None` when the step can't be located, so the caller can fall back.
 pub fn cut_step(log: &str, steps: &[StepSpan], number: u32) -> Option<Vec<String>> {
     let lines: Vec<&str> = log.lines().collect();
-    let markers: Vec<(usize, &str)> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| {
-            let second = line_second(l)?;
-            strip_timestamp(l)
-                .starts_with(MARKER)
-                .then_some((i, second))
-        })
-        .collect();
+    let markers = top_level_markers(&lines);
 
-    // Assign markers to steps in order: each step takes the first unused
+    // Assign markers to steps in order. A step named "Run …" takes the first
+    // unused marker with the same text; any other step takes the first unused
     // marker at or after its start and no later than its end.
     let mut assigned: Vec<(u32, usize)> = Vec::new();
     let mut next = 0;
-    for step in steps.iter().filter(|s| !s.skipped) {
+    for (index, step) in steps.iter().enumerate() {
+        if !claims_marker(index, step) {
+            continue;
+        }
         let Some(start) = step.started.as_deref().and_then(|s| s.get(..19)) else {
             continue;
         };
         let end = step.completed.as_deref().and_then(|s| s.get(..19));
-        let found = markers[next..]
-            .iter()
-            .position(|(_, sec)| *sec >= start)
+        let in_window = |m: &Marker| m.second >= start && end.is_none_or(|end| m.second <= end);
+        let by_name = step.name.starts_with(MARKER_TEXT).then(|| {
+            markers[next..]
+                .iter()
+                .position(|m| in_window(m) && same_command(&m.text, &step.name))
+        });
+        let found = by_name
+            .flatten()
+            .or_else(|| markers[next..].iter().position(|m| m.second >= start))
             .map(|p| p + next)
-            .filter(|&p| end.is_none_or(|end| markers[p].1 <= end));
+            .filter(|&p| in_window(&markers[p]));
         if let Some(p) = found {
-            assigned.push((step.number, markers[p].0));
+            assigned.push((step.number, markers[p].line));
             next = p + 1;
         }
     }
 
     let pos = assigned.iter().position(|(n, _)| *n == number)?;
     let from = assigned[pos].1;
-    let to = match assigned.get(pos + 1) {
-        Some(&(_, line)) => line,
-        // Last step with a marker: stop at the first line after its end time.
-        None => {
-            let end = steps
-                .iter()
-                .find(|s| s.number == number)
-                .and_then(|s| s.completed.as_deref())
-                .and_then(|s| s.get(..19));
-            lines
-                .iter()
-                .enumerate()
-                .skip(from + 1)
-                .find(|(_, l)| matches!((line_second(l), end), (Some(sec), Some(end)) if sec > end))
-                .map_or(lines.len(), |(i, _)| i)
-        }
-    };
+    let end = steps
+        .iter()
+        .find(|s| s.number == number)
+        .and_then(|s| s.completed.as_deref())
+        .and_then(|s| s.get(..19));
+    let limit = assigned.get(pos + 1).map_or(lines.len(), |&(_, line)| line);
+    // Stop early at the post-job section, and (for the last step) at the
+    // first line after the step's end time.
+    let to = lines[from + 1..limit]
+        .iter()
+        .position(|l| {
+            strip_timestamp(l).starts_with(POST_JOB)
+                || (assigned.get(pos + 1).is_none()
+                    && matches!((line_second(l), end), (Some(sec), Some(end)) if sec > end))
+        })
+        .map_or(limit, |p| from + 1 + p);
     Some(
         lines[from..to]
             .iter()
             .map(|l| strip_timestamp(l).to_owned())
             .collect(),
     )
+}
+
+struct Marker<'a> {
+    line: usize,
+    second: &'a str,
+    /// `Run …` text after `##[group]`.
+    text: String,
+}
+
+/// `##[group]Run` lines outside composite actions (`##[start-action]` …
+/// `##[end-action]` wrap the inner steps of a composite action, whose own
+/// `Run` markers belong to the outer step).
+fn top_level_markers<'a>(lines: &[&'a str]) -> Vec<Marker<'a>> {
+    let mut depth = 0usize;
+    let mut out = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let text = strip_timestamp(l);
+        if text.starts_with("##[start-action") {
+            depth += 1;
+        } else if text.starts_with("##[end-action") {
+            depth = depth.saturating_sub(1);
+        } else if depth == 0
+            && text.starts_with(MARKER)
+            && let Some(second) = line_second(l)
+        {
+            let text = text.trim_start_matches("##[group]").trim().to_owned();
+            out.push(Marker {
+                line: i,
+                second,
+                text,
+            });
+        }
+    }
+    out
+}
+
+/// Whether a step can own a `Run` marker: not skipped, not the runner's own
+/// "Set up job" (always first), not post steps or "Complete job".
+fn claims_marker(index: usize, step: &StepSpan) -> bool {
+    !step.skipped
+        && index > 0
+        && step.name != "Set up job"
+        && step.name != "Complete job"
+        && !step.name.starts_with("Post ")
+}
+
+/// GitHub names an unnamed `run:` step after the start of its command, and
+/// may cut either side, so compare by prefix both ways.
+fn same_command(marker: &str, step_name: &str) -> bool {
+    let (a, b) = (marker.trim(), step_name.trim());
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
 }
 
 /// Every line of the job log, timestamps removed.
@@ -187,8 +241,13 @@ continuation without stamp
     }
 
     fn span(number: u32, start: &str, end: &str) -> StepSpan {
+        named(number, &format!("step {number}"), start, end)
+    }
+
+    fn named(number: u32, name: &str, start: &str, end: &str) -> StepSpan {
         StepSpan {
             number,
+            name: name.to_owned(),
             started: Some(format!("2026-11-25T{start}Z")),
             completed: Some(format!("2026-11-25T{end}Z")),
             skipped: false,
@@ -214,12 +273,12 @@ continuation without stamp
         let mut skipped = span(5, "21:54:51", "21:54:51");
         skipped.skipped = true;
         vec![
-            span(1, "21:54:20", "21:54:22"),
+            named(1, "Set up job", "21:54:20", "21:54:22"),
             span(2, "21:54:23", "21:54:23"),
             span(3, "21:54:23", "21:54:23"),
             span(4, "21:54:23", "21:54:51"),
             skipped,
-            span(6, "21:54:52", "21:54:53"),
+            named(6, "Complete job", "21:54:52", "21:54:53"),
         ]
     }
 
@@ -247,6 +306,82 @@ continuation without stamp
         assert!(cut_step(NEIGHBOURS, &steps, 1).is_none());
         assert!(cut_step(NEIGHBOURS, &steps, 5).is_none());
         assert!(cut_step(NEIGHBOURS, &steps, 6).is_none());
+    }
+
+    // Shape of a real job (brabo, 25/11): "Set up job" ends in the same second
+    // the checkout marker appears; a composite action has an inner Run marker;
+    // the failing step shares its end second with the post-job cleanup.
+    const REAL_SHAPE: &str = "2026-11-25T21:53:29.0Z Current runner version: '2.338.2'
+2026-11-25T21:53:29.1Z ##[group]Runner Image Provisioner
+2026-11-25T21:53:31.0Z Complete job name: Drift
+2026-11-25T21:53:31.5Z ##[group]Run actions/checkout@v4
+2026-11-25T21:53:32.0Z checked out
+2026-11-25T21:53:40.0Z ##[group]Run viralabs-dev/brabo-ci/.github/actions/vinculos@main
+2026-11-25T21:53:40.1Z ##[start-action display=vinculos id=v]
+2026-11-25T21:53:40.2Z ##[group]Run node vinculos.js
+2026-11-25T21:53:41.0Z vinculos ok
+2026-11-25T21:53:41.1Z ##[end-action id=v]
+2026-11-25T21:54:23.5Z ##[group]Run pnpm test:scripts
+2026-11-25T21:54:40.0Z ##[error]AssertionError
+2026-11-25T21:54:51.0Z ##[error]Process completed with exit code 1.
+2026-11-25T21:54:51.2Z Post job cleanup.
+2026-11-25T21:54:51.3Z [command]/usr/bin/git version
+2026-11-25T21:54:51.9Z Cleaning up orphan processes";
+
+    fn real_steps() -> Vec<StepSpan> {
+        vec![
+            named(1, "Set up job", "21:53:29", "21:53:31"),
+            named(2, "Run actions/checkout@v4", "21:53:31", "21:53:39"),
+            named(3, "vinculos", "21:53:40", "21:53:42"),
+            named(4, "Specs dos scripts", "21:54:23", "21:54:51"),
+            named(5, "Post Run actions/checkout@v4", "21:54:51", "21:54:51"),
+            named(6, "Complete job", "21:54:51", "21:54:52"),
+        ]
+    }
+
+    #[test]
+    fn set_up_job_does_not_steal_the_next_marker() {
+        let steps = real_steps();
+        assert!(cut_step(REAL_SHAPE, &steps, 1).is_none());
+        assert_eq!(
+            cut_step(REAL_SHAPE, &steps, 2).unwrap(),
+            vec!["##[group]Run actions/checkout@v4", "checked out"]
+        );
+    }
+
+    #[test]
+    fn composite_inner_markers_stay_with_their_step() {
+        let lines = cut_step(REAL_SHAPE, &real_steps(), 3).unwrap();
+        assert_eq!(
+            lines.first().unwrap(),
+            "##[group]Run viralabs-dev/brabo-ci/.github/actions/vinculos@main"
+        );
+        assert_eq!(lines.last().unwrap(), "##[end-action id=v]");
+    }
+
+    #[test]
+    fn failing_step_stops_before_post_job_cleanup() {
+        assert_eq!(
+            cut_step(REAL_SHAPE, &real_steps(), 4).unwrap(),
+            vec![
+                "##[group]Run pnpm test:scripts",
+                "##[error]AssertionError",
+                "##[error]Process completed with exit code 1.",
+            ]
+        );
+    }
+
+    #[test]
+    fn run_steps_match_by_text() {
+        assert!(same_command(
+            "Run pnpm test:scripts",
+            "Run pnpm test:scripts"
+        ));
+        assert!(same_command(
+            "Run pnpm test:scripts --reporter dot",
+            "Run pnpm test:scripts"
+        ));
+        assert!(!same_command("Run pnpm lint", "Run pnpm build"));
     }
 
     #[test]
