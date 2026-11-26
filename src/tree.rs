@@ -15,6 +15,8 @@ pub enum RowKey {
     Workflow(u64),
     Job(u64, usize),
     Step(u64, usize, u32),
+    /// A line of an open step's log: run, job, step and line index.
+    Log(u64, usize, u32, usize),
     Note(String, usize),
 }
 
@@ -84,6 +86,8 @@ pub struct Folds {
     pub open_calm: HashSet<String>,
     pub collapsed_repos: HashSet<String>,
     pub collapsed_workflows: HashSet<u64>,
+    /// Steps whose log the user opened in the tree: run, job, step.
+    pub open_steps: HashSet<(u64, usize, u32)>,
 }
 
 pub fn build(snapshot: &Snapshot, folds: &Folds) -> Vec<Row> {
@@ -439,8 +443,9 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, name: &str, folds: &Folds, no
                             detail: Some(format!("{}.", step.number)),
                             is_error: false,
                             url: job.url.clone(),
-                            foldable: false,
-                            expanded: false,
+                            // Opening a step shows the end of its log below it.
+                            foldable: !matches!(step.status, Status::Queued | Status::Skipped),
+                            expanded: folds.open_steps.contains(&(wf.run_id, j, step.number)),
                             gauge: Some(Gauge {
                                 status: step.status,
                                 done: 0,

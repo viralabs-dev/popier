@@ -28,6 +28,7 @@ pub fn lines(
     look: &Look,
     width: usize,
     now: i64,
+    log: Option<&[String]>,
 ) -> Vec<Line<'static>> {
     let mut p = Panel {
         look,
@@ -61,12 +62,16 @@ pub fn lines(
                 p.job(repo, wf, job);
             }
         }
-        RowKey::Step(run, j, n) => {
+        RowKey::Step(run, j, n) | RowKey::Log(run, j, n, _) => {
             if let Some((repo, wf)) = find_run(snapshot, *run)
                 && let Some(job) = jobs(wf).and_then(|jobs| jobs.get(*j))
                 && let Some(step) = job.steps.iter().find(|s| s.number == *n)
             {
                 p.step(repo, wf, job, step);
+                if let Some(log) = log {
+                    p.log(log);
+                }
+                p.hints(&[("⏎", "log here"), ("l", "full log"), ("d", "close")]);
             }
         }
         RowKey::Note(..) => {
@@ -153,6 +158,25 @@ impl Panel<'_, '_> {
         let style = self.fg(self.look.theme.muted).add_modifier(Modifier::BOLD);
         self.out
             .push(Line::from(Span::styled(label.to_uppercase(), style)));
+    }
+
+    /// The end of the step's log, one panel line per log line, cut to width.
+    fn log(&mut self, lines: &[String]) {
+        let t = self.look.theme;
+        self.section(&format!("log (last {})", lines.len()));
+        for line in lines {
+            let (mark, text, style) = paint::log_marker(line, t);
+            let mut spans = Vec::new();
+            if let Some((glyph, s)) = mark {
+                spans.push(Span::styled(format!("{glyph} "), s));
+            }
+            let used: usize = spans.iter().map(|s| s.width()).sum();
+            spans.push(Span::styled(
+                cut(&text, self.width.saturating_sub(used).max(4)),
+                style,
+            ));
+            self.out.push(Line::from(spans));
+        }
     }
 
     /// `label   value` with the label in a fixed column.
@@ -427,7 +451,6 @@ impl Panel<'_, '_> {
         }
         let style = self.fg(t.status(step.status));
         self.field("state", word(step.status).into(), style);
-        self.hints(&[("l", "log"), ("o", "open"), ("d", "close")]);
     }
 }
 

@@ -118,7 +118,7 @@ popier -c other.toml # use another config file
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | move |
-| `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs) |
+| `Enter` / `Space` | fold or unfold a repo or workflow (unfolding fetches its jobs); on a step, show the end of its log right below it |
 | `Tab` / `Shift+Tab` | next / previous repo |
 | `/` | filter by part of a branch name, or `#152` for a PR (applies as you type; `Esc` clears) |
 | `l` | show the log of the selected step (or job) in a panel; inside it `w` toggles step/whole job, `Esc` closes |

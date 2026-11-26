@@ -53,6 +53,9 @@ struct App {
     log_view: Option<LogView>,
     /// Downloaded job logs by job id, kept in memory for this session only.
     log_cache: HashMap<u64, Result<String, String>>,
+    /// Job logs to download (slug, job id), and the ids already asked for.
+    log_wanted: Vec<(String, u64)>,
+    log_asked: std::collections::HashSet<u64>,
     theme: Theme,
     bar: BarStyle,
     /// Drives the spinner.
@@ -91,25 +94,40 @@ impl LogView {
             None => vec!["loading log…".into()],
             Some(Err(err)) => vec![format!("cannot load log: {err}")],
             Some(Ok(log)) => match (&self.step, self.whole) {
-                (Some((number, spans)), false) => {
-                    let by_marker = logs::cut_step(log, spans, *number);
-                    let by_time = || {
-                        let span = spans.iter().find(|s| s.number == *number)?;
-                        logs::slice_step(log, span.started.as_deref(), span.completed.as_deref())
-                    };
-                    match by_marker.or_else(by_time) {
-                        Some(lines) => logs::tail(lines, logs::STEP_TAIL),
-                        None => {
-                            self.note = Some("step not found in log; showing end of job".into());
-                            logs::tail(logs::whole_job(log), logs::STEP_TAIL)
-                        }
+                (Some((number, spans)), false) => match step_lines(log, spans, *number) {
+                    Some(lines) => logs::tail(lines, logs::STEP_TAIL),
+                    None => {
+                        self.note = Some("step not found in log; showing end of job".into());
+                        logs::tail(logs::whole_job(log), logs::STEP_TAIL)
                     }
-                }
+                },
                 _ => logs::whole_job(log),
             },
         };
         self.scroll = None;
     }
+}
+
+/// The step's own lines of the job log: by its `##[group]Run` marker, else by
+/// its start and end times.
+fn step_lines(log: &str, spans: &[logs::StepSpan], number: u32) -> Option<Vec<String>> {
+    logs::cut_step(log, spans, number).or_else(|| {
+        let span = spans.iter().find(|s| s.number == number)?;
+        logs::slice_step(log, span.started.as_deref(), span.completed.as_deref())
+    })
+}
+
+/// Log lines shown under an open step in the tree.
+const TREE_LOG_LINES: usize = 8;
+/// Log lines shown in the details sidebar for a step.
+const PANEL_LOG_LINES: usize = 10;
+
+/// What is known about a step's log.
+enum StepLog {
+    Loading,
+    Failed(String),
+    /// The step's lines, or the whole job when the step was not found in it.
+    Lines(Vec<String>),
 }
 
 impl App {
@@ -124,6 +142,7 @@ impl App {
             .as_ref()
             .map(|s| tree::build(s, &self.folds))
             .unwrap_or_default();
+        self.add_log_rows();
         self.repo_rows = self
             .snapshot
             .as_ref()
@@ -133,6 +152,155 @@ impl App {
             .and_then(|key| self.rows.iter().position(|r| r.key == key))
             .or(if self.rows.is_empty() { None } else { Some(0) });
         self.list.select(index);
+    }
+
+    /// Puts the end of each open step's log right below the step row.
+    fn add_log_rows(&mut self) {
+        let rows = std::mem::take(&mut self.rows);
+        for row in rows {
+            let open = match row.key {
+                RowKey::Step(run, job, step) if row.expanded => Some((run, job, step)),
+                _ => None,
+            };
+            let depth = row.depth + 1;
+            let url = row.url.clone();
+            self.rows.push(row);
+            let Some((run, job, step)) = open else {
+                continue;
+            };
+            let line = |i: usize, text: String, is_error: bool, hint: Option<String>| Row {
+                key: RowKey::Log(run, job, step, i),
+                depth,
+                status: None,
+                text,
+                detail: hint,
+                is_error,
+                url: url.clone(),
+                foldable: false,
+                expanded: false,
+                gauge: None,
+                branch: None,
+                lead: None,
+                health: None,
+            };
+            match self.step_log(run, job, step) {
+                StepLog::Loading => self.rows.push(line(0, "loading log…".into(), true, None)),
+                StepLog::Failed(err) => {
+                    self.rows
+                        .push(line(0, format!("cannot load log: {err}"), true, None))
+                }
+                StepLog::Lines(lines) => {
+                    let total = lines.len();
+                    let shown = logs::tail(lines, TREE_LOG_LINES);
+                    let n = shown.len();
+                    for (i, text) in shown.into_iter().enumerate() {
+                        self.rows.push(line(i, text, false, None));
+                    }
+                    let more = if total > n {
+                        format!("{} more above · {total} lines", total - n)
+                    } else {
+                        format!("{total} lines")
+                    };
+                    self.rows
+                        .push(line(n, more, false, Some("full log".into())));
+                }
+            }
+        }
+    }
+
+    /// Repo slug, job id and step spans for a job row's address.
+    fn job_ref(&self, run_id: u64, job_idx: usize) -> Option<(String, u64, Vec<logs::StepSpan>)> {
+        let snapshot = self.snapshot.as_ref()?;
+        snapshot.repos.iter().find_map(|repo| {
+            let wf = repo
+                .workflows
+                .as_ref()
+                .ok()?
+                .iter()
+                .find(|w| w.run_id == run_id)?;
+            let job = wf.jobs.as_ref()?.as_ref().ok()?.get(job_idx)?;
+            let spans = job
+                .steps
+                .iter()
+                .map(|s| logs::StepSpan {
+                    number: s.number,
+                    name: s.name.clone(),
+                    started: s.started_at.clone(),
+                    completed: s.completed_at.clone(),
+                    skipped: s.status == Status::Skipped,
+                })
+                .collect();
+            Some((repo.slug.clone(), job.id, spans))
+        })
+    }
+
+    /// The step's log from the cache; asks for the job log when it is missing.
+    fn step_log(&mut self, run: u64, job: usize, step: u32) -> StepLog {
+        let Some((slug, job_id, spans)) = self.job_ref(run, job) else {
+            return StepLog::Failed("job not found".into());
+        };
+        match self.log_cache.get(&job_id) {
+            None => {
+                if self.log_asked.insert(job_id) {
+                    self.log_wanted.push((slug, job_id));
+                }
+                StepLog::Loading
+            }
+            Some(Err(err)) => StepLog::Failed(err.clone()),
+            Some(Ok(log)) => StepLog::Lines(
+                step_lines(log, &spans, step).unwrap_or_else(|| logs::whole_job(log)),
+            ),
+        }
+    }
+
+    /// The last lines of the selected step's log, for the details sidebar.
+    fn panel_log(&mut self) -> Option<Vec<String>> {
+        let (run, job, step) = match self.selected()?.key {
+            RowKey::Step(run, job, step) | RowKey::Log(run, job, step, _) => (run, job, step),
+            _ => return None,
+        };
+        match self.step_log(run, job, step) {
+            StepLog::Lines(lines) => Some(logs::tail(lines, PANEL_LOG_LINES)),
+            StepLog::Loading => Some(vec!["loading log…".into()]),
+            StepLog::Failed(err) => Some(vec![format!("cannot load log: {err}")]),
+        }
+    }
+
+    /// Logs of open steps whose job is still running grow; fetch them again
+    /// (the old text stays on screen until the new one arrives).
+    fn refetch_live_logs(&mut self) {
+        let live: Vec<(String, u64)> = self
+            .folds
+            .open_steps
+            .iter()
+            .filter_map(|&(run, job, _)| {
+                let snapshot = self.snapshot.as_ref()?;
+                let status = snapshot.repos.iter().find_map(|repo| {
+                    let wf = repo
+                        .workflows
+                        .as_ref()
+                        .ok()?
+                        .iter()
+                        .find(|w| w.run_id == run)?;
+                    Some(wf.jobs.as_ref()?.as_ref().ok()?.get(job)?.status)
+                })?;
+                let (slug, id, _) = self.job_ref(run, job)?;
+                matches!(status, Status::Running | Status::Queued).then_some((slug, id))
+            })
+            .collect();
+        for (slug, id) in live {
+            if self.log_cache.contains_key(&id) && !self.log_wanted.iter().any(|(_, j)| *j == id) {
+                self.log_wanted.push((slug, id));
+            }
+        }
+    }
+
+    /// Whether any open step belongs to this job.
+    fn shows_job_log(&self, job_id: u64) -> bool {
+        self.folds.open_steps.iter().any(|&(run, job, _)| {
+            self.job_ref(run, job)
+                .is_some_and(|(_, id, _)| id == job_id)
+        })
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -203,6 +371,19 @@ impl App {
                     }
                 }
             }
+            RowKey::Step(run, job, step) | RowKey::Log(run, job, step, _) => {
+                let key = (*run, *job, *step);
+                if !self.folds.open_steps.remove(&key) {
+                    self.folds.open_steps.insert(key);
+                }
+                // Keep the step selected when its log lines go away.
+                let step_key = RowKey::Step(*run, *job, *step);
+                self.rebuild();
+                if let Some(i) = self.rows.iter().position(|r| r.key == step_key) {
+                    self.list.select(Some(i));
+                }
+                return false;
+            }
             _ => {}
         }
         self.rebuild();
@@ -213,7 +394,7 @@ impl App {
     fn log_target(&self) -> Option<LogTarget> {
         let (run_id, job_idx, step_no) = match self.selected()?.key {
             RowKey::Job(run, job) => (run, job, None),
-            RowKey::Step(run, job, step) => (run, job, Some(step)),
+            RowKey::Step(run, job, step) | RowKey::Log(run, job, step, _) => (run, job, Some(step)),
             _ => return None,
         };
         let snapshot = self.snapshot.as_ref()?;
@@ -318,6 +499,8 @@ pub async fn run(config: Config, client: Client) -> Result<()> {
         filter_text: String::new(),
         log_view: None,
         log_cache: HashMap::new(),
+        log_wanted: Vec::new(),
+        log_asked: Default::default(),
         theme,
         bar: config.settings.bar,
         started: Instant::now(),
@@ -387,11 +570,26 @@ fn ui_loop(
             app.snapshot = Some(snap);
             app.loading = false;
             app.last_refresh = Some(Instant::now());
+            app.refetch_live_logs();
             app.rebuild();
+        }
+
+        for (slug, job_id) in std::mem::take(&mut app.log_wanted) {
+            let (client, tx) = (client.clone(), log_tx.clone());
+            tokio::spawn(async move {
+                let log = client
+                    .job_log(&slug, job_id)
+                    .await
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send((job_id, log));
+            });
         }
 
         while let Ok((job_id, log)) = log_rx.try_recv() {
             app.log_cache.insert(job_id, log);
+            if app.shows_job_log(job_id) {
+                app.rebuild();
+            }
             if let Some(view) = app.log_view.as_mut().filter(|v| v.job_id == job_id) {
                 view.fill(&app.log_cache);
             }
@@ -513,7 +711,9 @@ fn ui_loop(
             KeyCode::Char('l') => {
                 if let Some(target) = app.log_target() {
                     let mut view = target.view;
-                    if !app.log_cache.contains_key(&view.job_id) {
+                    if !app.log_cache.contains_key(&view.job_id)
+                        && app.log_asked.insert(view.job_id)
+                    {
                         let (client, tx, slug, job_id) =
                             (client.clone(), log_tx.clone(), target.slug, view.job_id);
                         tokio::spawn(async move {
@@ -652,14 +852,15 @@ fn draw(frame: &mut ratatui::Frame, app: &mut App, client: &Client) {
     frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), footer);
 }
 
-fn draw_details(frame: &mut ratatui::Frame, app: &App, look: &Look, area: Rect) {
+fn draw_details(frame: &mut ratatui::Frame, app: &mut App, look: &Look, area: Rect) {
     let theme = look.theme;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let inner_w = area.width.saturating_sub(4) as usize;
+    let log = app.panel_log();
     let lines = match (app.snapshot.as_ref(), app.selected()) {
-        (Some(snap), Some(row)) => detail::lines(snap, row, look, inner_w, now),
+        (Some(snap), Some(row)) => detail::lines(snap, row, look, inner_w, now, log.as_deref()),
         _ => vec![Line::from(Span::styled(
             "select a row to see its details",
             Style::new().fg(theme.muted),
@@ -833,7 +1034,7 @@ fn log_lines(lines: &[String], theme: &Theme) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let (mark, text, style) = log_marker(line, theme);
+            let (mark, text, style) = paint::log_marker(line, theme);
             if line.starts_with("##[endgroup]") {
                 depth = depth.saturating_sub(1);
             }
@@ -857,56 +1058,6 @@ fn log_lines(lines: &[String], theme: &Theme) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
-}
-
-type Mark = Option<(&'static str, Style)>;
-
-fn log_marker(line: &str, theme: &Theme) -> (Mark, String, Style) {
-    let bold = Modifier::BOLD;
-    let rules: [(&str, Mark, Style); 7] = [
-        (
-            "##[error]",
-            Some(("✗", Style::new().fg(theme.failure).add_modifier(bold))),
-            Style::new().fg(theme.failure),
-        ),
-        (
-            "##[warning]",
-            Some(("!", Style::new().fg(theme.ink).add_modifier(bold))),
-            Style::new().fg(theme.ink),
-        ),
-        (
-            "##[notice]",
-            Some(("i", Style::new().fg(theme.accent))),
-            Style::new().fg(theme.ink),
-        ),
-        (
-            "##[group]",
-            Some(("▾", Style::new().fg(theme.muted))),
-            Style::new().fg(theme.ink).add_modifier(bold),
-        ),
-        ("##[endgroup]", None, Style::new().fg(theme.faint)),
-        (
-            "##[command]",
-            Some(("$", Style::new().fg(theme.accent).add_modifier(bold))),
-            Style::new().fg(theme.ink).add_modifier(bold),
-        ),
-        ("##[debug]", None, Style::new().fg(theme.muted)),
-    ];
-    for (prefix, mark, style) in rules {
-        if let Some(rest) = line.strip_prefix(prefix) {
-            return (mark, rest.to_owned(), style);
-        }
-    }
-    // Plain lines that say something failed read in the failure color.
-    let failed = line.contains("FAILED")
-        || line.contains("panicked at")
-        || line.trim_start().starts_with("error");
-    let style = if failed {
-        Style::new().fg(theme.failure)
-    } else {
-        Style::new().fg(theme.ink)
-    };
-    (None, line.to_owned(), style)
 }
 
 fn open_url(url: &str) -> std::io::Result<()> {
@@ -1182,6 +1333,8 @@ mod tests {
             filter_text: String::new(),
             log_view: None,
             log_cache: HashMap::new(),
+            log_wanted: Vec::new(),
+            log_asked: Default::default(),
             theme: Theme::builtin(theme).unwrap(),
             bar: BarStyle::Line,
             started: Instant::now(),
@@ -1226,6 +1379,11 @@ mod tests {
             {
                 app.details = true;
                 app.list.select(Some(row));
+            }
+            // POPIER_STEPLOG=1 opens the failed step's log in the tree.
+            if let Ok(v) = std::env::var("POPIER_STEPLOG") {
+                open_failed_step(&mut app);
+                app.details = v == "panel";
             }
             // POPIER_LOG=1 opens the log panel on a sample failing step.
             if std::env::var("POPIER_LOG").is_ok() {
@@ -1313,5 +1471,100 @@ mod tests {
                 assert!(text.contains("details"), "panel at width {width}, row {i}");
             }
         }
+    }
+
+    /// Opens the first failed step of the demo with a sample log in the cache.
+    fn open_failed_step(app: &mut App) -> usize {
+        let step = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.key, RowKey::Step(..)) && r.status == Some(Status::Failure))
+            .expect("demo has a failed step");
+        let RowKey::Step(run, job, _) = app.rows[step].key else {
+            unreachable!()
+        };
+        let (_, job_id, _) = app.job_ref(run, job).unwrap();
+        let log: String = sample_log().lines.join("\n");
+        app.log_cache.insert(job_id, Ok(log));
+        app.list.select(Some(step));
+        app.toggle();
+        step
+    }
+
+    #[test]
+    fn opening_a_step_shows_its_log_below_and_closing_hides_it() {
+        let mut app = demo_app("noite");
+        let before = app.rows.len();
+        let step = open_failed_step(&mut app);
+        assert!(app.rows[step].expanded);
+        let logs: Vec<&Row> = app
+            .rows
+            .iter()
+            .skip(step + 1)
+            .take_while(|r| matches!(r.key, RowKey::Log(..)))
+            .collect();
+        assert_eq!(logs.len(), TREE_LOG_LINES + 1, "tail plus the hint line");
+        assert!(logs.last().unwrap().detail.is_some());
+        assert!(logs.iter().all(|r| r.depth == app.rows[step].depth + 1));
+
+        let theme = Theme::builtin("noite").unwrap();
+        let look = Look {
+            theme: &theme,
+            bar: BarStyle::Line,
+            tick: 0,
+        };
+        let lines = paint::rows(&app.rows, &look, 120);
+        let text = |l: &Line| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(text(&lines[step]).contains("▾ "), "{}", text(&lines[step]));
+        assert!(text(&lines[step + TREE_LOG_LINES]).contains("✗ Process completed"));
+        assert!(text(&lines[step + TREE_LOG_LINES + 1]).contains("l full log"));
+
+        // Enter on a log line closes its step and keeps the step selected.
+        app.list.select(Some(step + 3));
+        app.toggle();
+        assert_eq!(app.rows.len(), before);
+        assert_eq!(app.list.selected(), Some(step));
+        assert!(!app.rows[step].expanded);
+    }
+
+    #[test]
+    fn an_open_step_without_its_log_asks_for_it_once() {
+        let mut app = demo_app("noite");
+        let step = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.key, RowKey::Step(..)) && r.foldable)
+            .unwrap();
+        app.list.select(Some(step));
+        app.toggle();
+        assert_eq!(app.log_wanted.len(), 1);
+        assert_eq!(app.rows[step + 1].text, "loading log…");
+        app.rebuild();
+        assert_eq!(app.log_wanted.len(), 1, "not asked twice");
+    }
+
+    #[test]
+    fn the_details_panel_shows_the_step_log() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = demo_app("noite");
+        open_failed_step(&mut app);
+        app.details = true;
+        let client = Client::new("test".into()).unwrap();
+        let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        term.draw(|f| draw(f, &mut app, &client)).unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..40)
+            .flat_map(|y| (0..140).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+            .collect();
+        assert!(
+            text.contains("LOG (LAST 10)"),
+            "panel shows the log section"
+        );
     }
 }
