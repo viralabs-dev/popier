@@ -81,8 +81,12 @@ branch = "main"          # optional branch filter
 ```
 
 A project made of several repositories can be a group. The group gets its own
-row, with the worst state of its repos, and folds like a repo. A slug listed
-only in a group is watched with default options.
+row on a band: `◼` in the worst state of its repos, a health bar with one
+segment per state, the count per state and up to two reasons (`✗ api › CI`).
+Inside an open group, repos are shown without the shared prefix (`brabo-api` →
+`api`), those needing attention first; three or more green repos fold into one
+`✓ N repos ok` line that Enter opens. The header's pulse strip is split by
+group. A slug listed only in a group is watched with default options.
 
 ```toml
 [[group]]

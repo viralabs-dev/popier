@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 
 use crate::status::Status;
 use crate::theme::{self, BarStyle, Theme};
-use crate::tree::{Elapsed, Gauge, Row, RowKey};
+use crate::tree::{Elapsed, Gauge, Health, Row, RowKey};
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -57,7 +57,12 @@ pub fn rows(rows: &[Row], look: &Look, width: u16) -> Vec<Line<'static>> {
     let prefixes = tree_prefixes(rows);
     rows.iter()
         .zip(prefixes)
-        .map(|(row, prefix)| row_line(row, &prefix, look, name_w, bar_w))
+        .map(|(row, prefix)| match (&row.key, &row.health) {
+            (RowKey::Group(_), Some(health)) => {
+                group_line(row, health, look, name_w, bar_w, width as usize)
+            }
+            _ => row_line(row, &prefix, look, name_w, bar_w),
+        })
         .collect()
 }
 
@@ -104,6 +109,13 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
     let mut left: Vec<Span<'static>> = Vec::new();
     let mut name_style = Style::new().fg(t.ink);
     match &row.key {
+        RowKey::Calm(_) => {
+            left.push(Span::styled(prefix.to_owned(), look.fg(t.faint)));
+            left.push(Span::styled(fold(row), look.fg(t.faint)));
+            if let Some(s) = row.status {
+                left.push(look.glyph(s, true));
+            }
+        }
         RowKey::Group(_) | RowKey::Repo(_) => {
             left.push(Span::styled(prefix.to_owned(), look.fg(t.faint)));
             left.push(Span::styled(fold(row), look.fg(t.faint)));
@@ -182,7 +194,7 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
             let gap = if bar_w > 0 { bar_w + 2 } else { 1 } + 5 + 8;
             left.push(Span::raw(" ".repeat(gap)));
             left.push(Span::styled(elapsed(gauge.elapsed), look.fg(t.muted)));
-        } else if matches!(row.key, RowKey::Group(_) | RowKey::Repo(_)) && row.expanded {
+        } else if matches!(row.key, RowKey::Repo(_) | RowKey::Calm(_)) && row.expanded {
             // The open tree below already says why; keep the repo line calm.
             let calm = Gauge {
                 hint: None,
@@ -194,6 +206,86 @@ fn row_line(row: &Row, prefix: &str, look: &Look, name_w: usize, bar_w: usize) -
         }
     }
     Line::from(left)
+}
+
+/// A group row on a `surface` band across the whole width: fold, `◼` in the
+/// worst state's color, bold name, `N repos`, the health bar, the count per
+/// state and up to two reasons for attention.
+fn group_line(
+    row: &Row,
+    health: &Health,
+    look: &Look,
+    name_w: usize,
+    bar_w: usize,
+    width: usize,
+) -> Line<'static> {
+    let t = look.theme;
+    let bold = |c| Style::new().fg(c).add_modifier(Modifier::BOLD);
+    let mut spans = vec![
+        Span::styled(fold(row), look.fg(t.faint)),
+        Span::styled("◼ ", look.fg(row.status.map_or(t.faint, |s| t.status(s)))),
+    ];
+    let count = row.lead.clone().unwrap_or_default();
+    let room = name_w.saturating_sub(4 + count.chars().count() + 2);
+    let name = cut(&row.text, room.max(4));
+    let used = 4 + name.chars().count();
+    spans.push(Span::styled(name, bold(t.ink)));
+    if used + 2 + count.chars().count() < name_w {
+        spans.push(Span::styled(format!("  {count}"), look.fg(t.muted)));
+    }
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    if used < name_w {
+        spans.push(Span::raw(" ".repeat(name_w - used)));
+    }
+    if bar_w > 0 {
+        spans.push(Span::raw(" "));
+        let ch = match look.bar {
+            BarStyle::Line => "━",
+            BarStyle::Block => "█",
+        };
+        for (status, cells) in health_segments(&health.counts, bar_w) {
+            spans.push(Span::styled(ch.repeat(cells), look.status(status)));
+        }
+        spans.push(Span::raw(" "));
+    }
+    for (status, n) in &health.counts {
+        spans.push(Span::styled(
+            format!(" {} {n} ", status.icon()),
+            bold(t.status(*status)),
+        ));
+    }
+    for (status, reason) in &health.reasons {
+        spans.push(Span::raw("  "));
+        spans.push(look.glyph(*status, true));
+        spans.push(Span::styled(reason.clone(), look.fg(t.muted)));
+    }
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    Line::from(spans).style(Style::new().bg(t.surface))
+}
+
+/// Cells per state for a health bar `width` wide: proportional to the
+/// repo count, at least one for every state present.
+pub fn health_segments(counts: &[(Status, usize)], width: usize) -> Vec<(Status, usize)> {
+    let total: usize = counts.iter().map(|(_, n)| n).sum();
+    if total == 0 || width == 0 {
+        return Vec::new();
+    }
+    let spare = width.saturating_sub(counts.len());
+    let mut cells: Vec<(Status, usize)> = counts
+        .iter()
+        .map(|&(s, n)| (s, 1 + spare * n / total))
+        .collect();
+    // Rounding leftovers go to the largest state.
+    let used: usize = cells.iter().map(|(_, c)| c).sum();
+    if used < width
+        && let Some(big) = (0..cells.len()).max_by_key(|&i| counts[i].1)
+    {
+        cells[big].1 += width - used;
+    }
+    cells
 }
 
 fn fold(row: &Row) -> &'static str {
@@ -299,12 +391,14 @@ pub struct HeaderInfo {
 /// Two lines: totals per state, then a pulse strip and live mini bars.
 /// `rows` should hold every repo row, also those inside folded groups
 /// (see [`crate::tree::repo_rows`]).
-pub fn header(rows: &[Row], info: &HeaderInfo, look: &Look, width: u16) -> Vec<Line<'static>> {
+pub fn header(
+    rows: &[(Option<String>, Row)],
+    info: &HeaderInfo,
+    look: &Look,
+    width: u16,
+) -> Vec<Line<'static>> {
     let t = look.theme;
-    let repos: Vec<&Row> = rows
-        .iter()
-        .filter(|r| matches!(r.key, RowKey::Repo(_)))
-        .collect();
+    let repos: Vec<&Row> = rows.iter().map(|(_, r)| r).collect();
     let bold = |c| Style::new().fg(c).add_modifier(Modifier::BOLD);
 
     let mut left = vec![
@@ -353,8 +447,22 @@ pub fn header(rows: &[Row], info: &HeaderInfo, look: &Look, width: u16) -> Vec<L
         line1.extend(right);
     }
 
+    // Pulse strip, split by group when there are groups: `brabo ▮▮▮  avulsos ▮`.
     let mut line2 = vec![Span::raw(" ")];
-    for repo in &repos {
+    let grouped = rows.iter().any(|(g, _)| g.is_some());
+    let mut last: Option<Option<&str>> = None;
+    for (group, repo) in rows {
+        let group = group.as_deref();
+        if grouped && last != Some(group) {
+            if last.is_some() {
+                line2.push(Span::raw("  "));
+            }
+            line2.push(Span::styled(
+                format!("{} ", group.unwrap_or("avulsos")),
+                look.fg(t.muted),
+            ));
+            last = Some(group);
+        }
         let color = repo.status.map_or(t.faint, |s| t.status(s));
         line2.push(Span::styled("▮", look.fg(color)));
     }
@@ -406,6 +514,23 @@ mod tests {
     use crate::tree::{self, Folds};
 
     #[test]
+    fn health_segments_keep_every_state_visible() {
+        let counts = [(Status::Failure, 1), (Status::Success, 29)];
+        let cells = health_segments(&counts, 20);
+        assert_eq!(cells, vec![(Status::Failure, 1), (Status::Success, 19)]);
+        let counts = [
+            (Status::Failure, 1),
+            (Status::Running, 2),
+            (Status::Queued, 1),
+            (Status::Success, 6),
+        ];
+        let cells = health_segments(&counts, 20);
+        assert_eq!(cells.iter().map(|(_, c)| c).sum::<usize>(), 20);
+        assert!(cells.iter().all(|(_, c)| *c >= 1));
+        assert_eq!(cells[3].0, Status::Success);
+    }
+
+    #[test]
     fn formats_elapsed() {
         assert_eq!(elapsed(Some(Elapsed::Took(24))), "   24s");
         assert_eq!(elapsed(Some(Elapsed::Took(62))), " 1m02s");
@@ -436,6 +561,7 @@ mod tests {
             gauge: None,
             branch: None,
             lead: None,
+            health: None,
         }
     }
 

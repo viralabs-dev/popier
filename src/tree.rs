@@ -9,6 +9,8 @@ use crate::status::Status;
 pub enum RowKey {
     /// A `[[group]]` of repositories, by name.
     Group(String),
+    /// The `✓ N repos ok` line of a group's calm repos, by group name.
+    Calm(String),
     Repo(String),
     Workflow(u64),
     Job(u64, usize),
@@ -35,6 +37,8 @@ pub struct Row {
     pub branch: Option<String>,
     /// Repo rows: the pipeline the row summarizes (`CI`, `3 pipelines`).
     pub lead: Option<String>,
+    /// Group rows: repos per state and the reasons for attention.
+    pub health: Option<Health>,
 }
 
 /// Progress and timing shown to the right of a row.
@@ -76,6 +80,8 @@ impl Gauge {
 #[derive(Debug, Clone, Default)]
 pub struct Folds {
     pub collapsed_groups: HashSet<String>,
+    /// Groups whose calm-repos line the user opened.
+    pub open_calm: HashSet<String>,
     pub collapsed_repos: HashSet<String>,
     pub collapsed_workflows: HashSet<u64>,
 }
@@ -94,7 +100,7 @@ pub fn build_at(snapshot: &Snapshot, folds: &Folds, now: i64) -> Vec<Row> {
     let mut i = 0;
     while i < repos.len() {
         let Some(group) = repos[i].group.as_deref() else {
-            push_repo(&mut rows, &repos[i], folds, now);
+            push_repo(&mut rows, &repos[i], &repos[i].name, folds, now);
             i += 1;
             continue;
         };
@@ -102,100 +108,225 @@ pub fn build_at(snapshot: &Snapshot, folds: &Folds, now: i64) -> Vec<Row> {
             .iter()
             .take_while(|r| r.group.as_deref() == Some(group))
             .count();
-        let members = &repos[i..end];
-        let open = !folds.collapsed_groups.contains(group);
-        rows.push(group_row(group, members, open, now));
-        if open {
-            let start = rows.len();
-            for repo in members {
-                push_repo(&mut rows, repo, folds, now);
-            }
-            rows[start..].iter_mut().for_each(|r| r.depth += 1);
-        }
+        push_group(&mut rows, group, &repos[i..end], folds, now);
         i = end;
     }
     rows
 }
 
-/// Only the repo rows, every repo included even inside a folded group
-/// (for the header's totals).
-pub fn repo_rows(snapshot: &Snapshot) -> Vec<Row> {
+/// Every repo row with its group, also inside folded groups and the calm
+/// line, for the header's totals and pulse strip.
+pub fn repo_rows(snapshot: &Snapshot) -> Vec<(Option<String>, Row)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     let folds = Folds {
         collapsed_repos: snapshot.repos.iter().map(|r| r.slug.clone()).collect(),
         ..Folds::default()
     };
-    build(snapshot, &folds)
-        .into_iter()
-        .filter(|r| matches!(r.key, RowKey::Repo(_)))
+    snapshot
+        .repos
+        .iter()
+        .map(|repo| {
+            let mut rows = Vec::new();
+            push_repo(&mut rows, repo, &repo.name, &folds, now);
+            (repo.group.clone(), rows.swap_remove(0))
+        })
         .collect()
 }
 
 /// Lead pipeline name, its branch, and the gauge a summary row shows.
 type Summary = (String, Option<String>, Gauge);
 
-/// A group row: the worst state among its repos, with the repo and pipeline
-/// that cause it, or how many repos it holds when all is calm.
-fn group_row(name: &str, members: &[RepoView], open: bool, now: i64) -> Row {
-    let summaries: Vec<(&RepoView, Summary)> = members
-        .iter()
-        .filter_map(|m| {
-            let s = m
-                .workflows
-                .as_ref()
-                .ok()
-                .and_then(|w| repo_summary(w, now))?;
-            Some((m, s))
-        })
-        .collect();
-    let worst = summaries
-        .iter()
-        .min_by_key(|(_, (_, _, g))| attention_rank(g.status));
-    let count = format!(
-        "{} repo{}",
-        members.len(),
-        if members.len() == 1 { "" } else { "s" }
-    );
-    let (lead, branch, gauge) = match worst {
-        Some((repo, (lead, branch, gauge))) if attention_rank(gauge.status) < 3 => (
-            format!("{} · {lead}", repo.name),
-            branch.clone(),
-            Some(gauge.clone()),
-        ),
-        Some((_, (_, _, gauge))) => {
-            // All calm: when the most recent pipeline of the group ended.
-            let ago = summaries
-                .iter()
-                .filter_map(|(_, (_, _, g))| match g.elapsed {
-                    Some(Elapsed::Ago(s)) => Some(s),
-                    _ => None,
-                })
-                .min()
-                .map(Elapsed::Ago);
-            let calm = Gauge {
-                status: gauge.status,
-                done: 0,
-                total: 0,
-                elapsed: ago,
-                hint: None,
-            };
-            (count.clone(), None, Some(calm))
-        }
-        None => (count.clone(), None, None),
+/// How many repos of a group are in each state, and why it needs attention.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Health {
+    /// Repos per state, in [`HEALTH_ORDER`], states with no repo left out.
+    pub counts: Vec<(Status, usize)>,
+    /// Up to two `repo › pipeline` notes for repos that need attention,
+    /// with the progress of a running one.
+    pub reasons: Vec<(Status, String)>,
+}
+
+/// Order of the segments of a group's health bar: worst first.
+pub const HEALTH_ORDER: [Status; 6] = [
+    Status::Failure,
+    Status::Running,
+    Status::Queued,
+    Status::Success,
+    Status::Cancelled,
+    Status::Skipped,
+];
+
+/// Most urgent first, for the order of repos inside a group: failed,
+/// running, queued, cancelled, then the calm ones.
+fn group_rank(s: Option<Status>) -> u8 {
+    match s {
+        Some(Status::Failure) => 0,
+        Some(Status::Running) => 1,
+        Some(Status::Queued) => 2,
+        Some(Status::Cancelled) => 3,
+        None => 4,
+        Some(Status::Success | Status::Skipped) => 5,
+    }
+}
+
+/// Fewest calm repos that fold into one `✓ N repos ok` line.
+const CALM_MIN: usize = 3;
+
+/// The prefix every member shares (`brabo` for `brabo`, `brabo-api`, ...),
+/// with the separator that follows it, or `None` when they don't share one.
+fn shared_prefix(names: &[&str]) -> Option<String> {
+    let first = names.first()?;
+    let p = first.split(['-', '_', '.']).next()?;
+    if p.is_empty() || p.len() == first.len() && names.len() == 1 {
+        return None;
+    }
+    let shares = |n: &str| {
+        n == p
+            || n.strip_prefix(p)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| matches!(c, '-' | '_' | '.'))
     };
-    Row {
+    names.iter().all(|n| shares(n)).then(|| p.to_owned())
+}
+
+/// `brabo-api` → `api` when the group shares `brabo`; the repo named like
+/// the prefix keeps its name.
+fn short_name(name: &str, prefix: Option<&str>) -> String {
+    prefix
+        .and_then(|p| name.strip_prefix(p))
+        .and_then(|rest| rest.get(1..))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+        .to_owned()
+}
+
+/// The group row and, when open, its repos: those needing attention first,
+/// then the calm ones, folded into one line when there are enough of them.
+fn push_group(rows: &mut Vec<Row>, name: &str, members: &[RepoView], folds: &Folds, now: i64) {
+    let summaries: Vec<Option<Summary>> = members
+        .iter()
+        .map(|m| m.workflows.as_ref().ok().and_then(|w| repo_summary(w, now)))
+        .collect();
+    let status_of = |i: usize| summaries[i].as_ref().map(|(_, _, g)| g.status);
+    let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+    let prefix = shared_prefix(&names);
+    let short = |i: usize| short_name(&members[i].name, prefix.as_deref());
+
+    let counts: Vec<(Status, usize)> = HEALTH_ORDER
+        .iter()
+        .map(|&s| {
+            (
+                s,
+                (0..members.len())
+                    .filter(|&i| status_of(i) == Some(s))
+                    .count(),
+            )
+        })
+        .filter(|&(_, n)| n > 0)
+        .collect();
+    let mut order: Vec<usize> = (0..members.len()).collect();
+    order.sort_by_key(|&i| group_rank(status_of(i)));
+    let reasons: Vec<(Status, String)> = order
+        .iter()
+        .filter_map(|&i| {
+            let (lead, _, gauge) = summaries[i].as_ref()?;
+            if attention_rank(gauge.status) >= 3 {
+                return None;
+            }
+            let mut text = format!("{} › {lead}", short(i));
+            if gauge.status == Status::Running
+                && let Some(f) = gauge.fraction()
+            {
+                text.push_str(&format!(" {}%", (f * 100.0).floor() as u32));
+            }
+            Some((gauge.status, text))
+        })
+        .take(2)
+        .collect();
+    let worst = order.first().and_then(|&i| status_of(i));
+    let open = !folds.collapsed_groups.contains(name);
+    let repos_word = |n: usize| format!("{n} repo{}", if n == 1 { "" } else { "s" });
+    let mut detail = repos_word(members.len());
+    for (s, n) in &counts {
+        detail.push_str(&format!("  {} {n}", s.icon()));
+    }
+    rows.push(Row {
         key: RowKey::Group(name.to_owned()),
         depth: 0,
-        status: gauge.as_ref().map(|g| g.status),
+        status: worst,
         text: name.to_owned(),
-        detail: None,
+        detail: Some(detail),
         is_error: false,
         url: None,
         foldable: true,
         expanded: open,
-        gauge,
-        branch,
-        lead: Some(lead),
+        gauge: None,
+        branch: None,
+        lead: Some(repos_word(members.len())),
+        health: Some(Health { counts, reasons }),
+    });
+    if !open {
+        return;
     }
+
+    let start = rows.len();
+    let calm: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| group_rank(status_of(i)) == 5)
+        .collect();
+    let fold_calm = calm.len() >= CALM_MIN;
+    for &i in &order {
+        if !(fold_calm && calm.contains(&i)) {
+            push_repo(rows, &members[i], &short(i), folds, now);
+        }
+    }
+    if fold_calm {
+        let calm_open = folds.open_calm.contains(name);
+        let ago = calm
+            .iter()
+            .filter_map(|&i| match summaries[i].as_ref()?.2.elapsed {
+                Some(Elapsed::Ago(s)) => Some(s),
+                _ => None,
+            })
+            .min()
+            .map(Elapsed::Ago);
+        let mut lead: Vec<String> = calm.iter().take(3).map(|&i| short(i)).collect();
+        if calm.len() > 3 {
+            lead.push(format!("+{}", calm.len() - 3));
+        }
+        rows.push(Row {
+            key: RowKey::Calm(name.to_owned()),
+            depth: 0,
+            status: Some(Status::Success),
+            text: format!("{} ok", repos_word(calm.len())),
+            detail: None,
+            is_error: false,
+            url: None,
+            foldable: true,
+            expanded: calm_open,
+            gauge: Some(Gauge {
+                status: Status::Success,
+                done: 0,
+                total: 0,
+                elapsed: ago,
+                hint: None,
+            }),
+            branch: None,
+            lead: Some(lead.join(" · ")),
+            health: None,
+        });
+        if calm_open {
+            let inner = rows.len();
+            for &i in &calm {
+                push_repo(rows, &members[i], &short(i), folds, now);
+            }
+            rows[inner..].iter_mut().for_each(|r| r.depth += 1);
+        }
+    }
+    rows[start..].iter_mut().for_each(|r| r.depth += 1);
 }
 
 /// Failed first, then running, then queued, then the rest.
@@ -209,7 +340,7 @@ fn attention_rank(s: Status) -> u8 {
 }
 
 /// The repo row and, when open, its workflows, jobs and steps.
-fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
+fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, name: &str, folds: &Folds, now: i64) {
     let repo_open = !folds.collapsed_repos.contains(&repo.slug);
     let repo_url = format!("https://github.com/{}/actions", repo.slug);
     let summary = repo
@@ -225,7 +356,7 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
         key: RowKey::Repo(repo.slug.clone()),
         depth: 0,
         status: gauge.as_ref().map(|g| g.status),
-        text: repo.name.clone(),
+        text: name.to_owned(),
         detail: None,
         is_error: false,
         url: Some(repo_url),
@@ -234,6 +365,7 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
         gauge,
         branch,
         lead,
+        health: None,
     });
     if !repo_open {
         return;
@@ -271,6 +403,7 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
             gauge: Some(workflow_gauge(wf, now)),
             branch: wf.branch.as_deref().map(|b| shorten_middle(b, MAX_BRANCH)),
             lead: None,
+            health: None,
         });
         if !open {
             continue;
@@ -295,6 +428,7 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
                         gauge: Some(job_gauge(job, now)),
                         branch: None,
                         lead: None,
+                        health: None,
                     });
                     for step in &job.steps {
                         rows.push(Row {
@@ -321,6 +455,7 @@ fn push_repo(rows: &mut Vec<Row>, repo: &RepoView, folds: &Folds, now: i64) {
                             }),
                             branch: None,
                             lead: None,
+                            health: None,
                         });
                     }
                 }
@@ -343,6 +478,7 @@ fn note(slug: &str, idx: usize, text: String, is_error: bool) -> Row {
         gauge: None,
         branch: None,
         lead: None,
+        health: None,
     }
 }
 
@@ -649,8 +785,11 @@ mod tests {
         assert_eq!(rows[0].key, RowKey::Group("proj".into()));
         // Worst state of the group is the failing CI of api.
         assert_eq!(rows[0].status, Some(Status::Failure));
-        assert_eq!(rows[0].lead.as_deref(), Some("api · CI"));
+        let health = rows[0].health.as_ref().unwrap();
+        assert_eq!(health.counts, vec![(Status::Failure, 1)]);
+        assert_eq!(health.reasons, vec![(Status::Failure, "api › CI".into())]);
         let depths: Vec<u8> = rows.iter().map(|r| r.depth).collect();
+        // proj, api, CI, test, step, Lint, web, error
         assert_eq!(depths, vec![0, 1, 2, 3, 4, 2, 1, 2]);
 
         let mut folds = Folds::default();
@@ -658,6 +797,66 @@ mod tests {
         assert_eq!(build(&snap, &folds).len(), 1);
         // The header still sees every repo of a folded group.
         assert_eq!(repo_rows(&snap).len(), 2);
+    }
+
+    #[test]
+    fn strips_the_shared_prefix() {
+        let p = shared_prefix(&["brabo", "brabo-api", "brabo_web"]);
+        assert_eq!(p.as_deref(), Some("brabo"));
+        assert_eq!(short_name("brabo-api", p.as_deref()), "api");
+        assert_eq!(short_name("brabo", p.as_deref()), "brabo");
+        assert_eq!(shared_prefix(&["brabo-api", "hud"]), None);
+        assert_eq!(shared_prefix(&["brabox", "brabo-api"]), None);
+    }
+
+    #[test]
+    fn calm_repos_fold_into_one_line() {
+        let calm = |name: &str, id: u64| RepoView {
+            name: name.into(),
+            slug: format!("o/{name}"),
+            group: Some("p".into()),
+            workflows: Ok(vec![WorkflowView {
+                workflow_id: id,
+                run_id: id,
+                name: "CI".into(),
+                branch: Some("main".into()),
+                status: Status::Success,
+                url: String::new(),
+                started_at: None,
+                updated_at: None,
+                jobs: None,
+            }]),
+        };
+        let mut snap = sample();
+        snap.repos.truncate(1);
+        snap.repos[0].name = "p-api".into();
+        snap.repos[0].group = Some("p".into());
+        for (i, n) in ["p-a", "p-b", "p-c", "p-d"].iter().enumerate() {
+            snap.repos.push(calm(n, 50 + i as u64));
+        }
+        let mut folds = Folds::default();
+        folds.collapsed_workflows.insert(1);
+        let rows = build(&snap, &folds);
+        let keys: Vec<&RowKey> = rows.iter().map(|r| &r.key).collect();
+        assert_eq!(keys[1], &RowKey::Repo("o/api".into()));
+        assert_eq!(rows[1].text, "api");
+        assert_eq!(keys.last().unwrap(), &&RowKey::Calm("p".into()));
+        let calm_row = rows.last().unwrap();
+        assert_eq!(calm_row.text, "4 repos ok");
+        assert_eq!(calm_row.lead.as_deref(), Some("a · b · c · +1"));
+        assert_eq!(
+            rows[0].health.as_ref().unwrap().counts,
+            vec![(Status::Failure, 1), (Status::Success, 4)]
+        );
+
+        folds.open_calm.insert("p".into());
+        let rows = build(&snap, &folds);
+        let d = rows
+            .iter()
+            .find(|r| r.key == RowKey::Repo("o/p-d".into()))
+            .unwrap();
+        assert_eq!(d.text, "d");
+        assert_eq!(d.depth, 2);
     }
 
     #[test]
