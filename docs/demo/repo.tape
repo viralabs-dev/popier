@@ -11,7 +11,7 @@ Sleep 5s
 Show
 
 Sleep 2s
-# Filter runs by branch: only what ran on main stays.
+# Search: only what matches "main" (here, the branch) stays.
 Type "/"
 Sleep 400ms
 Type "main"
