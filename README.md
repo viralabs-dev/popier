@@ -79,9 +79,21 @@ installs it into `~/.local/bin` (set `POPIER_INSTALL_DIR` for another folder,
 `POPIER_VERSION=v0.1.0` for a given release). The script is
 [`docs/install.sh`](docs/install.sh), if you'd rather read it first.
 
+**One command (Windows x86_64, PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/viralabs-dev/popier/main/docs/install.ps1 | iex
+```
+
+It does the same with `popier-x86_64-pc-windows-msvc.tar.gz`: checks its
+SHA-256, installs `popier.exe` into `%LOCALAPPDATA%\Programs\popier` and adds
+that folder to your user `PATH` (same `POPIER_INSTALL_DIR` and `POPIER_VERSION`
+options). The script is [`docs/install.ps1`](docs/install.ps1).
+
 **Update:** `popier --update` replaces the binary with the latest release the
 same way, checking its SHA-256 first; if the download or the checksum fails,
-nothing is changed. Every release ships `--update` (the release build checks for
+nothing is changed. On Windows the running `popier.exe` is renamed to
+`popier.exe.old` and deleted on the next start. Every release ships `--update` (the release build checks for
 it), and each batch of new features merged into `main` gets a release, so
 `popier --update` always brings the latest. A popier built from source updates with
 `cargo install --git https://github.com/viralabs-dev/popier --force`.
@@ -101,11 +113,12 @@ install -m 755 popier ~/.local/bin/
 cargo install --git https://github.com/viralabs-dev/popier
 ```
 
-**Windows:** there is no prebuilt binary yet; build it from source with the
-command above (it needs [Rust](https://rustup.rs) and the MSVC build tools that
-`rustup` offers to install). It lands in `%USERPROFILE%\.cargo\bin\popier.exe`
-and reads its config from `%APPDATA%\popier\config.toml`. Use Windows Terminal
-for full colors.
+**Windows notes:** from source it needs [Rust](https://rustup.rs) and the MSVC
+build tools that `rustup` offers to install, and lands in
+`%USERPROFILE%\.cargo\bin\popier.exe`. popier reads its config from
+`%APPDATA%\popier\config.toml` (themes in `%APPDATA%\popier\themes`). It needs
+the [`gh` CLI](https://cli.github.com) logged in, or `GITHUB_TOKEN` set, as on
+Linux. Use Windows Terminal for full colors and mouse support.
 
 Notifications use `notify-send` (libnotify) on Linux, available on most
 desktops, and a native toast through Windows PowerShell on Windows.

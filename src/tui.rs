@@ -1310,9 +1310,19 @@ fn log_lines(lines: &[String], theme: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Opens `url` in the default browser. On Windows it goes through
+/// `rundll32` rather than `cmd /c start`, which would split the URL at `&`.
 fn open_url(url: &str) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open")
-        .arg(url)
+    let mut cmd = if cfg!(windows) {
+        let mut cmd = std::process::Command::new("rundll32");
+        cmd.arg("url.dll,FileProtocolHandler");
+        cmd
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    cmd.arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

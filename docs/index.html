@@ -214,7 +214,7 @@
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow"><span class="dot">●</span> open source · single Rust binary · Linux</span>
+    <span class="eyebrow"><span class="dot">●</span> open source · single Rust binary · Linux &amp; Windows</span>
     <h1>Every GitHub Actions pipeline,<br><span class="hl">live, on one terminal screen.</span></h1>
     <p class="lead">Stop opening a browser tab per repo to find out <em>which</em> pipeline broke. popier shows all of them in one tree, <code>repo → workflow → job → step</code>, with progress bars, the failing step called out, and its log one key away.</p>
     <div class="ctas">
@@ -365,7 +365,7 @@ branch = "main"   # optional</code></pre>
   <div class="wrap center">
     <div class="kicker">Install</div>
     <h2>Up and running in three commands</h2>
-    <p class="sub">Linux x86_64. Static musl build runs on any distro; or build it from source with Rust 1.85+.</p>
+    <p class="sub">Linux and Windows, x86_64. Static musl build runs on any distro; or build it from source with Rust 1.85+.</p>
     <div class="steps" style="text-align:left">
       <div class="step"><h3>Install</h3><p>Downloads the static binary from the latest release, checks its SHA-256 and puts it in <code>~/.local/bin</code>.</p>
         <pre><code>curl -fsSL https://viralabs-dev.github.io/popier/install.sh | sh</code></pre></div>
@@ -374,7 +374,7 @@ branch = "main"   # optional</code></pre>
       <div class="step"><h3>Watch</h3><p>Or <code>popier once</code> to print the tree and exit.</p>
         <pre><code>popier</code></pre></div>
     </div>
-    <p class="hint" style="margin-top:22px">read it first: <a href="install.sh">install.sh</a> · another folder: <code>POPIER_INSTALL_DIR=/usr/local/bin</code> · update later: <code>popier --update</code> · from source: <code>cargo install --git https://github.com/viralabs-dev/popier</code></p>
+    <p class="hint" style="margin-top:22px">read it first: <a href="install.sh">install.sh</a> · Windows (PowerShell): <code>irm https://raw.githubusercontent.com/viralabs-dev/popier/main/docs/install.ps1 | iex</code> (<a href="install.ps1">install.ps1</a>) · another folder: <code>POPIER_INSTALL_DIR=/usr/local/bin</code> · update later: <code>popier --update</code> · from source: <code>cargo install --git https://github.com/viralabs-dev/popier</code></p>
     <div class="ctas" style="margin-top:30px">
       <a class="btn primary" href="https://github.com/viralabs-dev/popier/releases/latest">Download the latest release</a>
       <a class="btn" href="https://github.com/viralabs-dev/popier#readme">Read the docs</a>
